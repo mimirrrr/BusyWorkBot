@@ -71,14 +71,23 @@ def fetch_forecast(lat: float, lon: float, start: dt.date, end: dt.date, tz: str
     return r.json()
 
 
-def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) -> str:
-    """One message block for one day, over working hours only."""
+def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) -> dict:
+    """One embed field for one day, over working hours only.
+
+    Returns {"name": ..., "value": ..., "inline": False, "max_rain_prob": float}
+    — max_rain_prob feeds the embed's overall color pick.
+    """
     idx = [
         i for i, t in enumerate(hourly["time"])
         if t.startswith(day.isoformat()) and work_start <= int(t[11:13]) < work_end
     ]
     if not idx:
-        return f"**{day.strftime('%A %d.%m.')}** — no forecast data ⚠️"
+        return {
+            "name": day.strftime("%A %d.%m."),
+            "value": "no forecast data ⚠️",
+            "inline": False,
+            "max_rain_prob": 0,
+        }
 
     temps = [hourly["temperature_2m"][i] for i in idx]
     probs = [hourly["precipitation_probability"][i] or 0 for i in idx]
@@ -88,16 +97,36 @@ def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) ->
     # dominant = most frequent code in the window
     dominant = max(set(codes), key=codes.count)
     sky = WEATHER_CODES.get(dominant, f"code {dominant}")
+    max_prob = max(probs)
 
-    return (
-        f"**{day.strftime('%A %d.%m.')}** — {sky}\n"
-        f"🌡️ {min(temps):.0f}–{max(temps):.0f} °C   "
-        f"🌧️ max {max(probs):.0f}% chance, {rain:.1f} mm total   "
+    value = (
+        f"{sky}\n"
+        f"🌡️ **{min(temps):.0f}–{max(temps):.0f} °C**\n"
+        f"🌧️ max **{max_prob:.0f}%** chance · {rain:.1f} mm total\n"
         f"💨 up to {wind:.0f} km/h"
     )
+    return {
+        "name": f"📅 {day.strftime('%A %d.%m.')}",
+        "value": value,
+        "inline": False,
+        "max_rain_prob": max_prob,
+    }
 
 
-def discord_dm(token: str, user_id: str, content: str) -> None:
+def embed_color(fields: list[dict]) -> int:
+    """Pick a left-border color from the worst rain chance across the weekend.
+
+    Placeholder heuristic for v1 — real verdict rules land in phase 3.
+    """
+    worst = max((f["max_rain_prob"] for f in fields), default=0)
+    if worst >= 60:
+        return 0xE74C3C  # red — likely wet
+    if worst >= 30:
+        return 0xF1C40F  # yellow — mixed
+    return 0x2ECC71      # green — looking dry
+
+
+def discord_dm(token: str, user_id: str, embed: dict) -> None:
     headers = {"Authorization": f"Bot {token}"}
     # 1. open (or reuse) the DM channel with me
     r = requests.post(
@@ -106,10 +135,10 @@ def discord_dm(token: str, user_id: str, content: str) -> None:
     )
     r.raise_for_status()
     channel_id = r.json()["id"]
-    # 2. send the message
+    # 2. send the message as an embed (title, colored border, fields, footer)
     r = requests.post(
         f"{DISCORD_API}/channels/{channel_id}/messages",
-        headers=headers, json={"content": content}, timeout=30,
+        headers=headers, json={"embeds": [embed]}, timeout=30,
     )
     r.raise_for_status()
 
@@ -131,18 +160,27 @@ def main() -> None:
     data = fetch_forecast(lat, lon, saturday, sunday, tz)
     hourly = data["hourly"]
 
-    message = (
-        f"📋 **Weekend forecast — Bělá** (sent {today.strftime('%A')})\n"
-        f"working hours {work_start}:00–{work_end}:00\n\n"
-        f"{summarize_day(hourly, saturday, work_start, work_end)}\n\n"
-        f"{summarize_day(hourly, sunday, work_start, work_end)}\n\n"
-        f"_v1 — raw forecast. Verdict rules come in phase 3._"
-    )
+    fields = [
+        summarize_day(hourly, saturday, work_start, work_end),
+        summarize_day(hourly, sunday, work_start, work_end),
+    ]
+    embed = {
+        "title": "📋 Weekend Forecast — Bělá",
+        "description": f"working hours {work_start}:00–{work_end}:00",
+        "color": embed_color(fields),
+        "fields": [
+            {"name": f["name"], "value": f["value"], "inline": f["inline"]}
+            for f in fields
+        ],
+        "footer": {"text": f"v1 raw forecast · sent {today.strftime('%A %d.%m.%Y')} · verdict rules come in phase 3"},
+        "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
 
     if dry_run:
-        print(message)
+        import json
+        print(json.dumps(embed, indent=2, ensure_ascii=False))
         return
-    discord_dm(token, user_id, message)
+    discord_dm(token, user_id, embed)
     print("Forecast DM sent.")
 
 
