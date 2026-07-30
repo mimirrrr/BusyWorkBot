@@ -1,1 +1,2 @@
 requests>=2.31
+tzdata>=2024.1  # Windows has no built-in IANA tz database; zoneinfo needs this package there

@@ -122,7 +122,7 @@ def main() -> None:
     lat = float(env("LAT", "49.97233"))       # Bělá 87, 747 23 Bělá (Opava)
     lon = float(env("LON", "18.14489"))
     tz = env("TZ_NAME", "Europe/Prague")
-    work_start = int(env("WORK_START", "10"))  # working hours window for stats
+    work_start = int(env("WORK_START", "9"))  # working hours window for stats
     work_end = int(env("WORK_END", "20"))
 
     today = dt.datetime.now(ZoneInfo(tz)).date()
