@@ -27,5 +27,5 @@ jobs:
           LAT: "49.97233"
           LON: "18.14489"
           TZ_NAME: "Europe/Prague"
-          WORK_START: "10"
+          WORK_START: "9"
           WORK_END: "20"
