@@ -1,0 +1,31 @@
+name: weekend-forecast
+
+on:
+  schedule:
+    # 15:00 UTC = 17:00 Prague during summer time (CEST, UTC+2).
+    # Season runs Apr-Sep so DST always applies; revisit if that changes.
+    - cron: "0 15 * * THU,FRI"
+  workflow_dispatch: {}   # manual "Run workflow" button for testing
+
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Send forecast DM
+        run: python src/forecast.py
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          LAT: "49.97233"
+          LON: "18.14489"
+          TZ_NAME: "Europe/Prague"
+          WORK_START: "10"
+          WORK_END: "20"
