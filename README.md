@@ -1,4 +1,4 @@
-# shift-forecast-bot
+# Shift-forecast-bot
 
 My weekend income depends on the weather (outdoor gastro). This bot DMs me the
 Sat/Sun forecast for my workplace every Thursday and Friday, will collect what
@@ -13,7 +13,7 @@ scheduled forecast DMs, no predictions or logging yet.
 - GitHub Actions cron fires Thu + Fri 17:00 Prague time
 - `src/forecast.py` pulls the weekend forecast for Bělá (Opava) from
   [Open-Meteo](https://open-meteo.com/) — free, no API key
-- Summarizes working hours (10:00–20:00) per day and sends it to my
+- Summarizes working hours (9:00–20:00) per day and sends it to my
   Discord DMs via the bot
 
 No servers. The script runs for a few seconds and exits.
