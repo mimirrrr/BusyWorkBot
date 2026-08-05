@@ -1,0 +1,3 @@
+# Copy to .dev.vars for local `wrangler dev` testing. NEVER commit .dev.vars.
+DISCORD_PUBLIC_KEY=your-app-public-key-here
+DISCORD_APPLICATION_ID=your-app-id-here

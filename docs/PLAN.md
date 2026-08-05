@@ -60,10 +60,12 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
    - Writes/updates the row in Postgres: `(date, busyness, note, logged_at)`.
    - Responds with message edit (confirmation state).
 
-4. **Database** (Neon Postgres free tier)
-   - `predictions`: date, predicted_busyness, forecast_json, rules_fired, created_at
-   - `outcomes`: date, actual_busyness (1–5), note, source (live | backfill), logged_at
-   - `weather_actual`: date, actual weather pulled post-hoc from Open-Meteo archive (so accuracy analysis can separate "bad forecast" from "bad rule").
+4. **Database** (Neon Postgres free tier) — schema in `db/schema.sql`
+   - `weathers` (číselník): weather code label, from `WEATHER_CODES` in `src/forecast.py`
+   - `visited` (číselník): busyness scale (nikdo/velmi slabe/slabe/stredni/hodne/naval) — shared by both the bot's predicted verdict and my logged reality, same scale either way
+   - `weather_prediction`: what the bot predicted — `den` (Sat/Sun forecast) + `predikce_den` (Thu or Fri, the day the job ran) as a pair, weather numbers, `predikce_navstevnost_id` (rule engine verdict, phase 3), `created_at`
+   - `user_input`: what actually happened — `den` (unique, upsert on re-click), `visited_id`, `sold_product` (units sold, via modal), `poznamka` (free-text note, via modal), `source` (live | backfill), `logged_at`
+   - `weather_actual`: not yet designed — deferred to phase 4 (post-hoc actual weather from Open-Meteo archive, so end-of-season analysis can separate "bad forecast" from "bad rule")
 
 5. **Completeness sweep** (GitHub Actions cron, weekly + end of season)
    - Query for unlogged past workdays → nag message in Discord listing missing dates, with the same button UI to fill them.
@@ -90,10 +92,12 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
 - **Done when:** a forecast message appears in Discord automatically on Friday.
 
 ### Phase 2 — logging loop
-- [ ] Neon Postgres schema
-- [ ] Cloudflare Worker interactions endpoint with signature verification
+- [x] Neon Postgres schema designed and deployed (`db/schema.sql`, run against Neon — Frankfurt, Postgres 18, Neon Auth off)
+- [x] Cloudflare Worker scaffolded (`worker/`) — Ed25519 signature verification + PING handshake, typechecks and bundles clean; button/modal handlers are stubs
+- [ ] Worker deployed to Cloudflare + `DISCORD_PUBLIC_KEY`/`DISCORD_APPLICATION_ID` set as Worker secrets
+- [ ] Interactions Endpoint URL set in Discord Developer Portal (confirms signature verification works against a real PING)
 - [ ] Monday button message + click → DB write → message edit confirmation
-- [ ] Note modal
+- [ ] Note modal (extended to also capture `sold_product` as a number field)
 - **Done when:** I can log a full weekend in two taps and see the rows in the DB.
 
 ### Phase 3 — prediction + feedback

@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+worker/node_modules/
+worker/.wrangler/
+worker/.dev.vars
+worker/dist/

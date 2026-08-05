@@ -1,0 +1,9 @@
+name = "shift-forecast-bot-interactions"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# No [vars] block on purpose: DISCORD_PUBLIC_KEY and DISCORD_APPLICATION_ID
+# are set with `wrangler secret put`, matching the plan's "never in the
+# repo" rule for Discord app config, even though they aren't sensitive in
+# the traditional sense. Local dev reads the same names from .dev.vars
+# (gitignored, see .dev.vars.example).
