@@ -14,6 +14,11 @@ import requests
 
 DISCORD_API = "https://discord.com/api/v10"
 
+# Message flag that switches the payload to Components V2, where text blocks
+# and button rows can be freely interleaved (day header directly above its
+# own buttons) instead of the classic single content string + trailing rows.
+IS_COMPONENTS_V2 = 1 << 15
+
 # (custom_id key, button label, button style) in busyness order — must match
 # the order `visited` was seeded in db/schema.sql (velmi slabe..naval), since
 # the Worker maps this position to a visited_id.
@@ -60,47 +65,45 @@ def last_weekend(today: dt.date) -> tuple[dt.date, dt.date]:
     return saturday, sunday
 
 
-def day_row(day: dt.date) -> dict:
-    """One action row of 5 busyness buttons for a single day.
+def text(content: str) -> dict:
+    return {"type": 10, "content": content}
+
+
+def day_block(day: dt.date) -> list[dict]:
+    """Header text + busyness row + note row for one day.
 
     custom_id carries the actual date (not "sat"/"sun") so the Worker never
     has to guess which weekend a stale message button belongs to.
     """
-    return {
-        "type": 1,
-        "components": [
-            {
-                "type": 2,
-                "style": style,
-                "label": label,
-                "custom_id": f"log:{day.isoformat()}:{key}",
-            }
-            for key, label, style in BUSYNESS
-        ],
-    }
+    return [
+        text(f"**{czech_day(day)} {day.strftime('%d.%m')}**"),
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2,
+                    "style": style,
+                    "label": label,
+                    "custom_id": f"log:{day.isoformat()}:{key}",
+                }
+                for key, label, style in BUSYNESS
+            ],
+        },
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2,
+                    "style": 2,
+                    "label": "ADD NOTE",
+                    "custom_id": f"note:{day.isoformat()}",
+                },
+            ],
+        },
+    ]
 
 
-def note_row(saturday: dt.date, sunday: dt.date) -> dict:
-    return {
-        "type": 1,
-        "components": [
-            {
-                "type": 2,
-                "style": 2,
-                "label": f"+ note {czech_day(saturday)[:2]}",
-                "custom_id": f"note:{saturday.isoformat()}",
-            },
-            {
-                "type": 2,
-                "style": 2,
-                "label": f"+ note {czech_day(sunday)[:2]}",
-                "custom_id": f"note:{sunday.isoformat()}",
-            },
-        ],
-    }
-
-
-def discord_dm(token: str, user_id: str, content: str, components: list[dict]) -> None:
+def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     headers = {"Authorization": f"Bot {token}"}
     # 1. open (or reuse) the DM channel with me
     r = requests.post(
@@ -109,10 +112,12 @@ def discord_dm(token: str, user_id: str, content: str, components: list[dict]) -
     )
     r.raise_for_status()
     channel_id = r.json()["id"]
-    # 2. send the message with button components
+    # 2. send the message as Components V2 (no "content"/"embeds" alongside it)
     r = requests.post(
         f"{DISCORD_API}/channels/{channel_id}/messages",
-        headers=headers, json={"content": content, "components": components}, timeout=30,
+        headers=headers,
+        json={"flags": IS_COMPONENTS_V2, "components": components},
+        timeout=30,
     )
     r.raise_for_status()
 
@@ -127,21 +132,19 @@ def main() -> None:
     today = dt.datetime.now(ZoneInfo(tz)).date()
     saturday, sunday = last_weekend(today)
 
-    content = (
-        f"📝 **Jak bylo o víkendu?** ({saturday.strftime('%d.%m.')}–{sunday.strftime('%d.%m.')})\n"
-        f"1. řada = **Sobota**, 2. řada = **Neděle**. Klepnutí znovu přepíše zápis."
-    )
     components = [
-        day_row(saturday),
-        day_row(sunday),
-        note_row(saturday, sunday),
+        text(f"📝 **Jak bylo o víkendu?** ({saturday.strftime('%d.%m.')}–{sunday.strftime('%d.%m.')})"),
+        *day_block(saturday),
+        {"type": 14, "divider": True, "spacing": 2},
+        *day_block(sunday),
     ]
 
     if dry_run:
         import json
-        print(json.dumps({"content": content, "components": components}, indent=2, ensure_ascii=False))
+        sys.stdout.reconfigure(encoding="utf-8")
+        print(json.dumps({"components": components}, indent=2, ensure_ascii=False))
         return
-    discord_dm(token, user_id, content, components)
+    discord_dm(token, user_id, components)
     print("Logging message sent.")
 
 

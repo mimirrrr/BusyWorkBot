@@ -86,18 +86,18 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
 ## Milestones
 
 ### Phase 1 — walking skeleton (this week)
-- [ ] Repo, Discord application/bot setup + empty private server (DM requirement)
-- [ ] GitHub Actions cron posts Friday forecast (raw weather, no rules yet) to Discord
-- [ ] Hardcoded workplace coordinates, Open-Meteo integration
+- [x] Repo, Discord application/bot setup + empty private server (DM requirement)
+- [x] GitHub Actions cron posts Friday forecast (raw weather, no rules yet) to Discord
+- [x] Hardcoded workplace coordinates, Open-Meteo integration
 - **Done when:** a forecast message appears in Discord automatically on Friday.
 
 ### Phase 2 — logging loop
 - [x] Neon Postgres schema designed and deployed (`db/schema.sql`, run against Neon — Frankfurt, Postgres 18, Neon Auth off)
 - [x] Cloudflare Worker scaffolded (`worker/`) — Ed25519 signature verification + PING handshake, typechecks and bundles clean; button/modal handlers are stubs
-- [ ] Worker deployed to Cloudflare + `DISCORD_PUBLIC_KEY`/`DISCORD_APPLICATION_ID` set as Worker secrets
-- [ ] Interactions Endpoint URL set in Discord Developer Portal (confirms signature verification works against a real PING)
-- [ ] Monday button message + click → DB write → message edit confirmation
-- [ ] Note modal (extended to also capture `sold_product` as a number field)
+- [x] Worker deployed to Cloudflare + `DISCORD_PUBLIC_KEY`/`DISCORD_APPLICATION_ID` set as Worker secrets
+- [x] Interactions Endpoint URL set in Discord Developer Portal (confirms signature verification works against a real PING)
+- [x] Monday button message + click → DB write → message edit confirmation
+- [x] Note modal (extended to also capture `sold_product` as a number field)
 - **Done when:** I can log a full weekend in two taps and see the rows in the DB.
 
 ### Phase 3 — prediction + feedback
