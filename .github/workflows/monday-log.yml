@@ -1,0 +1,27 @@
+name: monday-logging
+
+on:
+  schedule:
+    # 06:00 UTC = 08:00 Prague during summer time (CEST, UTC+2).
+    # Season runs Apr-Sep so DST always applies; revisit if that changes.
+    - cron: "0 6 * * MON"
+  workflow_dispatch: {}   # manual "Run workflow" button for testing
+
+jobs:
+  log-message:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Send logging message
+        run: python src/log_message.py
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          TZ_NAME: "Europe/Prague"
