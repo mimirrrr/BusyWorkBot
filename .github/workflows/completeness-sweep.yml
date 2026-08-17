@@ -2,11 +2,10 @@ name: completeness-sweep
 
 on:
   schedule:
-    # 19:00 UTC Thursday = 21:00 (9pm) Prague (CEST). Not Sunday/Monday —
-    # Monday's 08:00 logging message is what's supposed to fill in Sat/Sun,
-    # so running any earlier than that would nag about the just-finished
-    # weekend before it's even had a chance to be logged.
-    - cron: "0 19 * * THU"
+    # 19:00 UTC Tuesday = 21:00 (9pm) Prague (CEST) — right after Monday's
+    # 08:00 logging message has had its shot at filling in Sat/Sun, so a
+    # missed fill gets caught the very next evening.
+    - cron: "0 19 * * TUE"
   workflow_dispatch: {}   # manual "Run workflow" button for testing
 
 jobs:
