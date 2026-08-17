@@ -68,6 +68,23 @@ CREATE TABLE user_input (
 );
 
 -- ============================================================
+-- season_config — singleton row: this year's work-season window.
+--
+-- Every scheduled script (forecast, Monday log, completeness sweep) checks
+-- this first and quietly no-ops outside [season_start, season_end]. If this
+-- table is empty (never configured yet), scripts fail OPEN — run as if
+-- always in season — so nothing silently breaks before it's ever been set.
+-- Set/updated via a Discord modal (src/season_reminder.py + the Worker's
+-- season_modal handler), not edited by hand.
+-- ============================================================
+CREATE TABLE season_config (
+    id           INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    season_start DATE NOT NULL,
+    season_end   DATE NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================================
 -- Seed data
 -- ============================================================
 INSERT INTO visited (name_v) VALUES

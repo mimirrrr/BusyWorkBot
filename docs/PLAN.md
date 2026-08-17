@@ -9,7 +9,7 @@ A Discord bot that predicts how busy my weekend outdoor gastro shifts will be ba
 ## Context
 
 - I work weekends (Sat + Sun) in outdoor gastro. Business volume is heavily weather-dependent.
-- Season runs end of April → end of September. Starting mid-season (late July 2026) — ~9 weekends of live data left this season, plus backfill for April–July.
+- Season runs 2.5.2026 (Sat) – 4.10.2026 (Sun). Live bot tracking started 1.8.2026, mid-season — everything from 2.5. through 31.7. (13 weekends, 26 days) needs backfilling from memory; live data covers the rest.
 - Primary goals: (1) actually useful to me, (2) portfolio project with honest, verifiable metrics.
 
 ## Core principle
@@ -83,7 +83,7 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
    - End of season: final sweep until dataset is 100% labeled.
 
 6. **Backfill (one-time script)**
-   - Pull historical weather April → July from Open-Meteo archive API.
+   - Pull historical weather 2.5.–31.7.2026 from Open-Meteo archive API.
    - Label those weekends from memory via the same Discord button flow (batch of messages).
    - Mark `source = backfill` — these labels are noisy and the analysis/writeup must say so. Distinguishing clean vs. noisy data is part of the point.
 
@@ -114,11 +114,13 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
 ### Phase 3 — prediction + feedback
 - [x] Rule engine v1 with predictions stored before the weekend
 - [x] Friday message includes last weekend's prediction vs. reality
-- [ ] Weekly completeness sweep
+- [x] Weekly completeness sweep
 - **Done when:** the bot is making falsifiable predictions and tracking its own record.
 
 ### Phase 4 — backfill + hardening
-- [ ] Historical weather backfill April–July
+- [x] Season boundary: `season_config` DB singleton + yearly Discord-modal prompt (`src/season_reminder.py`) to set it; forecast/logging/sweep all no-op outside the configured window (fails open if never set)
+- [x] Monthly keepalive commit (`.github/workflows/keepalive.yml`) — prevents GitHub's 60-day-inactivity auto-disable of scheduled workflows, which would otherwise silently kill everything (mid-season too, not just over winter — the season itself is >60 days)
+- [ ] Historical weather backfill 2.5.–31.7.2026 (13 weekends, 26 days)
 - [ ] Memory-labeling flow for past weekends (marked as backfill)
 - [ ] Error handling: API downtime, Actions cron quirks, timezone correctness (Europe/Prague), retries
 - **Done when:** dataset covers the whole season to date and jobs survive a failed API call.

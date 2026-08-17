@@ -219,6 +219,20 @@ def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     r.raise_for_status()
 
 
+def is_in_season(database_url: str, today: dt.date) -> bool:
+    """Fails OPEN: True (keep running) if season_config has no row yet, so
+    nothing silently breaks before the season has ever been configured.
+    """
+    with psycopg.connect(database_url, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT season_start, season_end FROM season_config WHERE id = 1")
+            row = cur.fetchone()
+    if row is None:
+        return True
+    season_start, season_end = row
+    return season_start <= today <= season_end
+
+
 def store_predictions(database_url: str, predikce_den: dt.date, days: list[dict]) -> None:
     """Upsert one weather_prediction row per day that had data. ON CONFLICT
     (den, predikce_den) so a re-run (e.g. manual workflow_dispatch retry) on
@@ -328,6 +342,10 @@ def main() -> None:
     work_end = int(env("WORK_END", "20"))
 
     today = dt.datetime.now(ZoneInfo(tz)).date()
+    if not dry_run and not is_in_season(database_url, today):
+        print("Forecast: outside the configured season, skipping.")
+        return
+
     saturday, sunday = next_weekend(today)
 
     data = fetch_forecast(lat, lon, saturday, sunday, tz)

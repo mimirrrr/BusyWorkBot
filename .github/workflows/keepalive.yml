@@ -1,0 +1,27 @@
+name: keepalive
+
+on:
+  schedule:
+    # 1st of every month, 06:00 UTC. Well under GitHub's 60-day no-activity
+    # threshold for auto-disabling scheduled workflows — this repo's actual
+    # work (forecast/logging/sweep) goes quiet for months outside the season,
+    # so this exists purely to keep those schedules armed year-round without
+    # any manual re-enabling. See docs/PLAN.md "Season boundary" notes.
+    - cron: "0 6 1 * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Empty commit to keep scheduled workflows enabled
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "keepalive: prevent GitHub from disabling scheduled workflows"
+          git push

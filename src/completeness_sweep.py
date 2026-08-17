@@ -65,6 +65,24 @@ def text(content: str) -> dict:
     return {"type": 10, "content": content}
 
 
+def czech_day_count(n: int) -> str:
+    """Czech noun declension for 'den' (day): 1 den, 2-4 dny, 0/5+ dní."""
+    if n == 1:
+        return f"{n} den"
+    if 2 <= n <= 4:
+        return f"{n} dny"
+    return f"{n} dní"
+
+
+def czech_more_days(n: int) -> str:
+    """Same declension, for the '+N more' overflow line."""
+    if n == 1:
+        return f"+{n} další den"
+    if 2 <= n <= 4:
+        return f"+{n} další dny"
+    return f"+{n} dalších dní"
+
+
 def day_block(day: dt.date) -> list[dict]:
     """Header text + busyness row + note row for one day — identical layout
     to src/log_message.py's day_block, so the Worker's button handling needs
@@ -126,6 +144,20 @@ def fetch_missing_days(database_url: str, today: dt.date) -> list[dt.date]:
             return [row[0] for row in cur.fetchall()]
 
 
+def is_in_season(database_url: str, today: dt.date) -> bool:
+    """Fails OPEN: True (keep running) if season_config has no row yet, so
+    nothing silently breaks before the season has ever been configured.
+    """
+    with psycopg.connect(database_url, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT season_start, season_end FROM season_config WHERE id = 1")
+            row = cur.fetchone()
+    if row is None:
+        return True
+    season_start, season_end = row
+    return season_start <= today <= season_end
+
+
 def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     headers = {"Authorization": f"Bot {token}"}
     r = requests.post(
@@ -152,6 +184,10 @@ def main() -> None:
     tz = env("TZ_NAME", "Europe/Prague")
 
     today = dt.datetime.now(ZoneInfo(tz)).date()
+    if not is_in_season(database_url, today):
+        print("Completeness sweep: outside the configured season, skipping.")
+        return
+
     missing = fetch_missing_days(database_url, today)
 
     if not missing:
@@ -160,13 +196,13 @@ def main() -> None:
 
     shown, overflow = missing[:MAX_DAYS_PER_MESSAGE], missing[MAX_DAYS_PER_MESSAGE:]
 
-    components = [text(f"⚠️ **Chybí ti zápis za {len(missing)} den(dní)** — doplň prosím:")]
+    components = [text(f"⚠️ **Chybí ti zápis za {czech_day_count(len(missing))}** — doplň prosím:")]
     for i, day in enumerate(shown):
         components.extend(day_block(day))
         if i < len(shown) - 1:
             components.append({"type": 14, "divider": True, "spacing": 1})
     if overflow:
-        components.append(text(f"-# +{len(overflow)} dalších chybí, doplní se v příštím sweepu"))
+        components.append(text(f"-# {czech_more_days(len(overflow))} chybí, doplní se v příštím sweepu"))
 
     if dry_run:
         import json

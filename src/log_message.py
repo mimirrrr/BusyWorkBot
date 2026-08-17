@@ -10,6 +10,7 @@ import sys
 import datetime as dt
 from zoneinfo import ZoneInfo
 
+import psycopg
 import requests
 
 DISCORD_API = "https://discord.com/api/v10"
@@ -103,6 +104,20 @@ def day_block(day: dt.date) -> list[dict]:
     ]
 
 
+def is_in_season(database_url: str, today: dt.date) -> bool:
+    """Fails OPEN: True (keep running) if season_config has no row yet, so
+    nothing silently breaks before the season has ever been configured.
+    """
+    with psycopg.connect(database_url, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT season_start, season_end FROM season_config WHERE id = 1")
+            row = cur.fetchone()
+    if row is None:
+        return True
+    season_start, season_end = row
+    return season_start <= today <= season_end
+
+
 def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     headers = {"Authorization": f"Bot {token}"}
     # 1. open (or reuse) the DM channel with me
@@ -127,9 +142,15 @@ def main() -> None:
     dry_run = "--dry-run" in sys.argv
     token = "" if dry_run else env("DISCORD_BOT_TOKEN")
     user_id = "" if dry_run else env("DISCORD_USER_ID")
+    # Optional in --dry-run (only used if a local .env happens to have it).
+    database_url = os.environ.get("DATABASE_URL") if dry_run else env("DATABASE_URL")
     tz = env("TZ_NAME", "Europe/Prague")
 
     today = dt.datetime.now(ZoneInfo(tz)).date()
+    if not dry_run and not is_in_season(database_url, today):
+        print("Logging message: outside the configured season, skipping.")
+        return
+
     saturday, sunday = last_weekend(today)
 
     components = [

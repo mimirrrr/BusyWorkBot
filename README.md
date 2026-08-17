@@ -5,8 +5,9 @@ Sat/Sun forecast for my workplace every Thursday and Friday, will collect what
 actually happened via one-tap Discord buttons, and at the end of the season
 reports how well weather predicted my shifts.
 
-Full roadmap: [docs/PLAN.md](docs/PLAN.md). **Current status: Phase 1** —
-scheduled forecast DMs, no predictions or logging yet.
+Full roadmap: [docs/PLAN.md](docs/PLAN.md). **Current status: Phase 4** —
+forecasts, logging, rule-engine predictions, and the weekly completeness
+sweep are all live; historical backfill is the remaining piece.
 
 ## How it works (phase 1)
 
@@ -44,8 +45,10 @@ and user ID (`.env` is gitignored).
 
 ## Notes
 
-- Actions cron is UTC; `0 15 * * THU,FRI` = 17:00 CEST. The season is
-  April–September so DST always applies.
+- Actions cron is UTC; `0 15 * * THU,FRI` = 17:00 CEST. The season runs
+  2.5.–4.10. so DST always applies.
 - Coordinates are hardcoded for Bělá 87, 747 23 Bělá: 49.97233 N, 18.14489 E.
-- GitHub may skip scheduled runs on repos with no activity for 60+ days —
-  a non-issue during the season, worth knowing in the off-season.
+- GitHub auto-disables scheduled workflows after 60+ days with no repository
+  activity — and the season itself is longer than that, so this would've bitten
+  mid-season too, not just over winter. `.github/workflows/keepalive.yml` makes
+  a trivial monthly empty commit specifically to prevent that.

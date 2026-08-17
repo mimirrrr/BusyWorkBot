@@ -79,6 +79,40 @@ export default {
         });
       }
 
+      if (action === "season_setup") {
+        return json({
+          type: InteractionResponseType.MODAL,
+          data: {
+            custom_id: "season_modal",
+            title: "Nastavit sezónu",
+            components: [
+              {
+                type: 1,
+                components: [{
+                  type: 4,
+                  custom_id: "season_start",
+                  label: "Začátek sezóny (den.měsíc, např. 2.5.)",
+                  style: 1,
+                  required: true,
+                  max_length: 10,
+                }],
+              },
+              {
+                type: 1,
+                components: [{
+                  type: 4,
+                  custom_id: "season_end",
+                  label: "Konec sezóny (den.měsíc, např. 4.10.)",
+                  style: 1,
+                  required: true,
+                  max_length: 10,
+                }],
+              },
+            ],
+          },
+        });
+      }
+
       if (action === "note") {
         return json({
           type: InteractionResponseType.MODAL,
@@ -118,6 +152,30 @@ export default {
 
     if (interaction.type === InteractionType.MODAL_SUBMIT) {
       const [action, isoDate] = interaction.data.custom_id.split(":");
+
+      if (action === "season_modal") {
+        const startRaw = modalValue(interaction.data.components, "season_start").trim();
+        const endRaw = modalValue(interaction.data.components, "season_end").trim();
+        const year = new Date().getUTCFullYear();
+        const start = parseDayMonth(startRaw, year);
+        const end = parseDayMonth(endRaw, year);
+
+        if (!start || !end) {
+          return json({
+            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            data: {
+              content: `Nerozumím datu "${!start ? startRaw : endRaw}". Použij formát den.měsíc, např. 2.5. Klepni na tlačítko a zkus to znovu.`,
+              flags: EPHEMERAL,
+            },
+          });
+        }
+
+        await saveSeasonConfig(env.DATABASE_URL, start.iso, end.iso);
+        return json({
+          type: InteractionResponseType.UPDATE_MESSAGE,
+          data: { components: confirmSeason(interaction.message.components, start.iso, end.iso) },
+        });
+      }
 
       if (action === "note_modal") {
         const poznamka = modalValue(interaction.data.components, "poznamka").trim();
@@ -185,6 +243,53 @@ async function logBusyness(databaseUrl: string, isoDate: string, key: string): P
     VALUES (${isoDate}, ${visitedId}, 'live')
     ON CONFLICT (den) DO UPDATE SET visited_id = EXCLUDED.visited_id, logged_at = now()
   `;
+}
+
+/**
+ * Parses "den.měsíc" (e.g. "2.5." or "2.5") against the given year. Returns
+ * null on anything that doesn't cleanly parse to a real calendar date — the
+ * caller re-prompts rather than guessing.
+ */
+function parseDayMonth(input: string, year: number): { iso: string } | null {
+  const match = input.match(/^(\d{1,2})\.(\d{1,2})\.?$/);
+  if (!match) return null;
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  // Catches e.g. 31.4. (April has 30 days) — Date normalizes overflow instead
+  // of erroring, so compare back against what was asked for.
+  if (date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  const iso = date.toISOString().slice(0, 10);
+  return { iso };
+}
+
+/**
+ * Upserts the singleton season_config row (id=1) — always the current
+ * season's window, overwriting whatever was there before.
+ */
+async function saveSeasonConfig(databaseUrl: string, startIso: string, endIso: string): Promise<void> {
+  const sql = neon(databaseUrl);
+  await sql`
+    INSERT INTO season_config (id, season_start, season_end)
+    VALUES (1, ${startIso}, ${endIso})
+    ON CONFLICT (id) DO UPDATE SET
+      season_start = EXCLUDED.season_start,
+      season_end = EXCLUDED.season_end,
+      updated_at = now()
+  `;
+}
+
+/** Replaces the "set season" button row with a confirmation text block. */
+function confirmSeason(components: any[], startIso: string, endIso: string): any[] {
+  const fmt = (iso: string) => `${Number(iso.slice(8, 10))}.${Number(iso.slice(5, 7))}.${iso.slice(0, 4)}`;
+  return components.map((component) => {
+    const isSeasonRow =
+      component.type === 1 &&
+      component.components?.some((c: any) => c.custom_id === "season_setup");
+    if (!isSeasonRow) return component;
+    return { type: 10, content: `✅ Sezóna nastavena: ${fmt(startIso)} – ${fmt(endIso)}` };
+  });
 }
 
 function modalValue(actionRows: any[], customId: string): string {

@@ -1,14 +1,15 @@
-name: monday-logging
+name: season-reminder
 
 on:
   schedule:
-    # 06:00 UTC = 08:00 Prague during summer time (CEST, UTC+2).
-    # Season runs 2.5.-4.10. so DST always applies; revisit if that changes.
-    - cron: "0 6 * * MON"
+    # April 20, 08:00 UTC = 10:00 CEST. A couple weeks ahead of a typical
+    # early-May season start, leaving room to set the dates before forecasts
+    # need to start going out.
+    - cron: "0 8 20 4 *"
   workflow_dispatch: {}   # manual "Run workflow" button for testing
 
 jobs:
-  log-message:
+  remind:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,10 +20,8 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Send logging message
-        run: python src/log_message.py
+      - name: Send season setup reminder
+        run: python src/season_reminder.py
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          TZ_NAME: "Europe/Prague"
