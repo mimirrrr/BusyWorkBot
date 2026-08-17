@@ -9,6 +9,7 @@ import sys
 import datetime as dt
 from zoneinfo import ZoneInfo
 
+import psycopg
 import requests
 
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
@@ -38,6 +39,37 @@ WEATHER_CODES = {
 # Python's %A depends on system locale (not reliably set on GitHub's runners),
 # so day names are mapped by hand instead.
 CZECH_DAYS = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"]
+
+# Rule engine v1 tiers, best (busiest) to worst — order matters, predict_verdict
+# indexes into this. Keys match BUSYNESS in src/log_message.py.
+TIERS = ["slammed", "busy", "normal", "slow", "dead"]
+VERDICT_LABELS = {"slammed": "Slammed 🔥", "busy": "Busy 📈", "normal": "Normal",
+                   "slow": "Slow 📉", "dead": "Dead 💀"}
+# verdict key -> visited.name_v (db/schema.sql seed order)
+VISITED_NAMES = {"dead": "velmi slabe", "slow": "slabe", "normal": "stredni",
+                  "busy": "hodne", "slammed": "naval"}
+REVERSE_VISITED_NAMES = {v: k for k, v in VISITED_NAMES.items()}
+
+
+def predict_verdict(max_rain_prob: float, temp_max: float) -> str:
+    """Rule engine v1: rain probability sets the base tier (dominant signal),
+    extreme temperature demotes one tier (too hot -> pool instead; too cold ->
+    early/late season). Temp is orientation-only, per docs/PLAN.md — it never
+    promotes, only demotes at the extremes.
+    """
+    if max_rain_prob <= 10:
+        idx = 0
+    elif max_rain_prob <= 30:
+        idx = 1
+    elif max_rain_prob <= 50:
+        idx = 2
+    elif max_rain_prob <= 80:
+        idx = 3
+    else:
+        idx = 4
+    if temp_max >= 34 or temp_max < 17:
+        idx = min(idx + 1, len(TIERS) - 1)
+    return TIERS[idx]
 
 
 def czech_day(day: dt.date) -> str:
@@ -69,6 +101,13 @@ def next_weekend(today: dt.date) -> tuple[dt.date, dt.date]:
     return saturday, saturday + dt.timedelta(days=1)
 
 
+def last_weekend(today: dt.date) -> tuple[dt.date, dt.date]:
+    """Most recently completed Saturday and Sunday (mirrors src/log_message.py)."""
+    days_since_sunday = (today.weekday() - 6) % 7
+    sunday = today - dt.timedelta(days=days_since_sunday)
+    return sunday - dt.timedelta(days=1), sunday
+
+
 def fetch_forecast(lat: float, lon: float, start: dt.date, end: dt.date, tz: str) -> dict:
     params = {
         "latitude": lat,
@@ -85,10 +124,12 @@ def fetch_forecast(lat: float, lon: float, start: dt.date, end: dt.date, tz: str
 
 
 def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) -> dict:
-    """One embed field for one day, over working hours only.
+    """One message block for one day, over working hours only, plus the rule
+    engine's verdict and the raw numbers needed to store the prediction.
 
-    Returns {"name": ..., "value": ..., "inline": False, "max_rain_prob": float}
-    — max_rain_prob feeds the embed's overall color pick.
+    has_data is False when Open-Meteo returned nothing for the window — the
+    caller must skip storing a prediction in that case (nothing to compute it
+    from).
     """
     idx = [
         i for i, t in enumerate(hourly["time"])
@@ -96,10 +137,11 @@ def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) ->
     ]
     if not idx:
         return {
+            "day": day,
             "name": f"📅 {czech_day(day)} {day.strftime('%d.%m.')}",
             "value": "žádná data o počasí ⚠️",
-            "inline": False,
             "max_rain_prob": 0,
+            "has_data": False,
         }
 
     temps = [hourly["temperature_2m"][i] for i in idx]
@@ -110,19 +152,33 @@ def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) ->
     # dominant = most frequent code in the window
     dominant = max(set(codes), key=codes.count)
     sky = WEATHER_CODES.get(dominant, f"code {dominant}")
+    # WEATHER_CODES values are "label emoji" — strip the trailing emoji token
+    # to get the plain label stored in db/schema.sql's weathers table.
+    weather_label = sky.rsplit(" ", 1)[0]
     max_prob = max(probs)
+    temp_min, temp_max = min(temps), max(temps)
+    verdict = predict_verdict(max_prob, temp_max)
 
     value = (
         f"{sky}\n"
-        f"🌡️ **{min(temps):.0f}–{max(temps):.0f} °C**\n"
+        f"🌡️ **{temp_min:.0f}–{temp_max:.0f} °C**\n"
         f"🌧️ max **{max_prob:.0f}%** šance · {rain:.1f} mm celkem\n"
-        f"💨 rychlost větru do {wind:.0f} km/h"
+        f"💨 rychlost větru do {wind:.0f} km/h\n"
+        f"➡️ **Verdikt: {VERDICT_LABELS[verdict]}**"
     )
     return {
+        "day": day,
         "name": f"📅 {czech_day(day)} {day.strftime('%d.%m.')}",
         "value": value,
-        "inline": False,
         "max_rain_prob": max_prob,
+        "has_data": True,
+        "verdict": verdict,
+        "weather_label": weather_label,
+        "chance_rain": round(max_prob),
+        "srazky": round(rain, 1),
+        "teplota_min": round(temp_min),
+        "teplota_max": round(temp_max),
+        "wind_speed": round(wind),
     }
 
 
@@ -163,11 +219,108 @@ def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     r.raise_for_status()
 
 
+def store_predictions(database_url: str, predikce_den: dt.date, days: list[dict]) -> None:
+    """Upsert one weather_prediction row per day that had data. ON CONFLICT
+    (den, predikce_den) so a re-run (e.g. manual workflow_dispatch retry) on
+    the same day overwrites rather than erroring.
+    """
+    with psycopg.connect(database_url, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            for d in days:
+                if not d["has_data"]:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO weather_prediction
+                        (den, predikce_den, pocasi_id, chance_rain, srazky,
+                         teplota_min, teplota_max, wind_speed, predikce_navstevnost_id)
+                    VALUES (
+                        %(den)s, %(predikce_den)s,
+                        (SELECT id_w FROM weathers WHERE name_w = %(weather_label)s),
+                        %(chance_rain)s, %(srazky)s, %(teplota_min)s, %(teplota_max)s,
+                        %(wind_speed)s,
+                        (SELECT id_v FROM visited WHERE name_v = %(visited_name)s)
+                    )
+                    ON CONFLICT (den, predikce_den) DO UPDATE SET
+                        pocasi_id = EXCLUDED.pocasi_id,
+                        chance_rain = EXCLUDED.chance_rain,
+                        srazky = EXCLUDED.srazky,
+                        teplota_min = EXCLUDED.teplota_min,
+                        teplota_max = EXCLUDED.teplota_max,
+                        wind_speed = EXCLUDED.wind_speed,
+                        predikce_navstevnost_id = EXCLUDED.predikce_navstevnost_id
+                    """,
+                    {
+                        "den": d["day"],
+                        "predikce_den": predikce_den,
+                        "weather_label": d["weather_label"],
+                        "chance_rain": d["chance_rain"],
+                        "srazky": d["srazky"],
+                        "teplota_min": d["teplota_min"],
+                        "teplota_max": d["teplota_max"],
+                        "wind_speed": d["wind_speed"],
+                        "visited_name": VISITED_NAMES[d["verdict"]],
+                    },
+                )
+
+
+def fetch_last_weekend_comparison(database_url: str, saturday: dt.date, sunday: dt.date) -> list[dict]:
+    """For each of last Sat/Sun: the Friday-run prediction (the "official" one,
+    per docs/PLAN.md — its predikce_den always sorts after Thursday's for the
+    same den) and what was actually logged, if any. Either side can be missing
+    (rule engine went live partway through the season; a day may not be
+    logged yet) — the caller must render that gracefully, not assume both exist.
+    """
+    results = []
+    with psycopg.connect(database_url, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            for day in (saturday, sunday):
+                cur.execute(
+                    """
+                    SELECT v.name_v FROM weather_prediction wp
+                    JOIN visited v ON v.id_v = wp.predikce_navstevnost_id
+                    WHERE wp.den = %s ORDER BY wp.predikce_den DESC LIMIT 1
+                    """,
+                    (day,),
+                )
+                pred = cur.fetchone()
+                cur.execute(
+                    """
+                    SELECT v.name_v FROM user_input ui
+                    JOIN visited v ON v.id_v = ui.visited_id
+                    WHERE ui.den = %s
+                    """,
+                    (day,),
+                )
+                actual = cur.fetchone()
+                results.append({
+                    "day": day,
+                    "predicted": REVERSE_VISITED_NAMES.get(pred[0]) if pred else None,
+                    "actual": REVERSE_VISITED_NAMES.get(actual[0]) if actual else None,
+                })
+    return results
+
+
+def comparison_line(c: dict) -> str:
+    label = f"📅 {czech_day(c['day'])} {c['day'].strftime('%d.%m.')}"
+    if c["predicted"] is None:
+        return f"{label} — v DB nemám predikci (mimo sezónu pravidel)"
+    predicted = VERDICT_LABELS[c["predicted"]]
+    if c["actual"] is None:
+        return f"{label} — predikce: **{predicted}**, realita: *zatím nezalogováno*"
+    actual = VERDICT_LABELS[c["actual"]]
+    match = "✅" if c["predicted"] == c["actual"] else "❌"
+    return f"{label} — predikce: **{predicted}**, realita: **{actual}** {match}"
+
+
 def main() -> None:
     load_dotenv()
     dry_run = "--dry-run" in sys.argv
     token = "" if dry_run else env("DISCORD_BOT_TOKEN")
     user_id = "" if dry_run else env("DISCORD_USER_ID")
+    # Optional in --dry-run (only used if a local .env happens to have it, to
+    # preview the Friday comparison block) but required for a real send.
+    database_url = os.environ.get("DATABASE_URL") if dry_run else env("DATABASE_URL")
     lat = float(env("LAT", "49.97233"))       # Bělá 87, 747 23 Bělá (Opava)
     lon = float(env("LON", "18.14489"))
     tz = env("TZ_NAME", "Europe/Prague")
@@ -186,22 +339,38 @@ def main() -> None:
     ]
 
     now = dt.datetime.now(dt.timezone.utc)
-    components = [
-        {
-            "type": 17,  # Container — accent bar + grouped content, mirrors the old embed look
-            "accent_color": 0x3498DB,  # flat blue for v1; embed_color() parked for phase 3 verdict rules
+    components = []
+
+    # Friday's is the "official" prediction used for accuracy scoring (per
+    # docs/PLAN.md), so only Friday's message looks back at last weekend.
+    if today.weekday() == 4 and database_url:
+        last_sat, last_sun = last_weekend(today)
+        comparison = fetch_last_weekend_comparison(database_url, last_sat, last_sun)
+        components.append({
+            "type": 17,
+            "accent_color": 0x95A5A6,
             "components": [
-                text(f"📋 **Víkendová předpověď — Bělá**\notevřeno {work_start}:00–{work_end}:00"),
-                text(f"{fields[0]['name']}\n{fields[0]['value']}"),
-                {"type": 14, "divider": True, "spacing": 2},
-                text(f"{fields[1]['name']}\n{fields[1]['value']}"),
-                text(
-                    f"-# v1 · odesláno {czech_day(today)} {today.strftime('%d.%m.%Y')} "
-                    f"· pravidla vyhodnocení přijdou ve fázi 3 · <t:{int(now.timestamp())}:f>"
-                ),
+                text("🔁 **Minulý víkend: predikce vs. realita**"),
+                text(comparison_line(comparison[0])),
+                {"type": 14, "divider": True, "spacing": 1},
+                text(comparison_line(comparison[1])),
             ],
-        },
-    ]
+        })
+
+    components.append({
+        "type": 17,  # Container — accent bar + grouped content, mirrors the old embed look
+        "accent_color": 0x3498DB,  # flat blue for v1; embed_color() parked for phase 3 verdict rules
+        "components": [
+            text(f"📋 **Víkendová předpověď — Bělá**\notevřeno {work_start}:00–{work_end}:00"),
+            text(f"{fields[0]['name']}\n{fields[0]['value']}"),
+            {"type": 14, "divider": True, "spacing": 2},
+            text(f"{fields[1]['name']}\n{fields[1]['value']}"),
+            text(
+                f"-# odesláno {czech_day(today)} {today.strftime('%d.%m.%Y')} "
+                f"· <t:{int(now.timestamp())}:f>"
+            ),
+        ],
+    })
 
     if dry_run:
         import json
@@ -209,6 +378,7 @@ def main() -> None:
         print(json.dumps(components, indent=2, ensure_ascii=False))
         return
     discord_dm(token, user_id, components)
+    store_predictions(database_url, today, fields)
     print("Forecast DM sent.")
 
 

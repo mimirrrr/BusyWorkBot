@@ -112,8 +112,8 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
 - **Done when:** I can log a full weekend in two taps and see the rows in the DB.
 
 ### Phase 3 — prediction + feedback
-- [ ] Rule engine v1 with predictions stored before the weekend
-- [ ] Friday message includes last weekend's prediction vs. reality
+- [x] Rule engine v1 with predictions stored before the weekend
+- [x] Friday message includes last weekend's prediction vs. reality
 - [ ] Weekly completeness sweep
 - **Done when:** the bot is making falsifiable predictions and tracking its own record.
 
@@ -163,3 +163,4 @@ Workplace: Bělá 87, 747 23 Bělá (Opava district, CZ). Resolve exact `LAT`/`L
 - Do work hours vary by day/month? Rules need opening-hours windows to evaluate weather against.
 - Tips/earnings as a second logged metric? More signal, slightly more friction — decide in Phase 2.
 - Next season: replace hand rules with a simple model trained on season 1? (Nice v2 story, out of scope now.)
+- v2 idea (after v1 is fully working): factor in nearby food festivals/events as a busyness signal alongside weather — some way to check for local events near the workplace on a given weekend and account for them in the prediction. Needs a data source for local events; deferred until the weather-only pipeline is proven.

@@ -13,7 +13,7 @@ Core design principle: **code computes, AI narrates.** All stats/accuracy/graphs
 This repo has two separately-deployed pieces that only communicate through Postgres — there is no shared process or shared code between them.
 
 1. **`src/` (Python)** — one-shot scripts triggered by GitHub Actions cron, each running for a few seconds and exiting. No persistent server.
-   - `src/forecast.py` — Thu+Fri 17:00 Prague: pulls Open-Meteo forecast, DMs a Components V2 message to Discord, (phase 3) writes the prediction to `weather_prediction`.
+   - `src/forecast.py` — Thu+Fri 17:00 Prague: pulls Open-Meteo forecast, runs the rule engine (`predict_verdict` — rain sets the base tier, extreme temp demotes one tier), DMs a Components V2 message to Discord, writes the prediction to `weather_prediction` (`store_predictions`). Friday's run only (the "official" prediction) prepends a second Container comparing last weekend's stored prediction against what was actually logged (`fetch_last_weekend_comparison`) — degrades gracefully (no crash) when either side is missing.
    - `src/log_message.py` — Monday 08:00 Prague: DMs the busyness-logging buttons message.
    - Deployed via `.github/workflows/forecast.yml` and `.github/workflows/monday-log.yml`.
 
@@ -65,4 +65,4 @@ These aren't enforced by types across the Python/TS boundary — keep them in sy
 - All day names are rendered in Czech (`CZECH_DAYS`), computed by hand rather than via locale-dependent `%A` — GitHub's runners don't reliably have a Czech locale.
 - Timezone is always `Europe/Prague`, passed as `TZ_NAME` env var and used with `zoneinfo.ZoneInfo` in Python / manual UTC-date parsing in the Worker (`czechDay` parses as UTC midnight specifically to avoid TZ-shifting the weekday).
 - The Worker's `CZECH_DAYS` array starts at Sunday (JS `getUTCDay()` convention: 0=Sunday); Python's starts at Monday (`date.weekday()` convention). Don't copy one array into the other without adjusting the offset.
-- Secrets are never committed: GitHub Actions secrets for the Python side (`DISCORD_BOT_TOKEN`, `DISCORD_USER_ID`), `wrangler secret put` for the Worker side (`DISCORD_PUBLIC_KEY`, `DISCORD_APPLICATION_ID`, `DATABASE_URL`) — not even `wrangler.toml [vars]`, by deliberate choice (see comment in `worker/wrangler.toml`).
+- Secrets are never committed: GitHub Actions secrets for the Python side (`DISCORD_BOT_TOKEN`, `DISCORD_USER_ID`, `DATABASE_URL` — the forecast job needs the latter to write predictions), `wrangler secret put` for the Worker side (`DISCORD_PUBLIC_KEY`, `DISCORD_APPLICATION_ID`, `DATABASE_URL`) — not even `wrangler.toml [vars]`, by deliberate choice (see comment in `worker/wrangler.toml`).

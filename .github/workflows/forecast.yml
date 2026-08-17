@@ -24,6 +24,7 @@ jobs:
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           LAT: "49.97233"
           LON: "18.14489"
           TZ_NAME: "Europe/Prague"
