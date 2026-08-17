@@ -1,0 +1,30 @@
+name: completeness-sweep
+
+on:
+  schedule:
+    # 19:00 UTC Thursday = 21:00 (9pm) Prague (CEST). Not Sunday/Monday —
+    # Monday's 08:00 logging message is what's supposed to fill in Sat/Sun,
+    # so running any earlier than that would nag about the just-finished
+    # weekend before it's even had a chance to be logged.
+    - cron: "0 19 * * THU"
+  workflow_dispatch: {}   # manual "Run workflow" button for testing
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Send completeness nag
+        run: python src/completeness_sweep.py
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TZ_NAME: "Europe/Prague"
