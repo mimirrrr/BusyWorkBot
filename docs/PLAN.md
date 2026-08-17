@@ -41,28 +41,39 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
    - Runs twice: Thursday gives the early picture, Friday gives the updated one (forecasts often shift on Friday).
    - Friday's message highlights what changed vs. Thursday ("rain chance Sat jumped 20% → 65%, verdict downgraded Busy → Slow"). The Friday prediction is the official one used for accuracy scoring; Thursday's is stored too, so I can later measure how much forecasts drift day-to-day.
    - Pull Sat+Sun forecast for workplace coordinates from Open-Meteo (free, no API key): temp, precipitation probability + amount, wind, cloud cover, hourly resolution for opening hours.
-   - Apply rule-based prediction (v1 = hand-written rules, e.g. "rain prob >60% during opening hours → Dead/Slow", "≥30°C sunny → Slammed").
+   - Apply rule-based prediction (v1 = hand-written rules). Rain is the dominant signal; temperature is secondary/orientation-only — it barely matters except at the extremes (too hot and people go to the pool instead; too cold mostly only happens at the start/end of the season). Values below are orientation, not hard boundaries:
+
+     | Verdict | Temp | Rain probability | Sky/weather |
+     |---|---|---|---|
+     | Slammed | 28–34°C | 0–10% | sunny / lehce zataženo |
+     | Busy | 20–28°C | 10–30% | cloudy / zataženo |
+     | Normal | 17–20°C or 34°C+ | 30–50% | zataženo / mrholení |
+     | Slow | 14–17°C or 34°C+ | 50–80% | mrholení / slabý déšť |
+     | Dead | 14–17°C or 37°C+ | 80–100% | slabý déšť – bouřky |
    - Post prediction to Discord channel: per-day verdict + key weather numbers + confidence.
+   - Message renders as Components V2 (Container with the blue accent bar + a Separator between the Saturday and Sunday blocks) — same building blocks as the Monday logging message, so both messages share one visual style.
    - Include last weekend's prediction vs. logged reality ("last week I said Busy, you logged Normal").
    - Store the prediction in DB (so accuracy is checked against what was *actually predicted*, no hindsight).
 
 2. **Logging message** (GitHub Actions cron, Monday ~08:00 local — NOT Sunday, I get home late)
-   - Bot posts one message with button rows:
-     - Saturday: `[Dead] [Slow] [Normal] [Busy] [Slammed]`
-     - Sunday: `[Dead] [Slow] [Normal] [Busy] [Slammed]`
-     - Optional `[+ note]` button per day → opens Discord modal for free-text (e.g. "rained till noon, dead till 2").
+   - Bot posts one Components V2 message, day header directly above its own buttons, a divider between the two days:
+     - **Sobota `dd.mm`**: `[Dead] [Slow] [Normal] [Busy] [Slammed]` then `[ADD NOTE]`
+     - **Neděle `dd.mm`**: same layout
    - One tap per day = full log entry. Target: under 10 seconds total on phone.
-   - Clicking a button again overwrites (misclick recovery).
-   - After click, bot edits the message to show `✅ Saturday: Busy` as confirmation.
+   - Clicking a busyness button again overwrites (misclick recovery); re-submitting the note modal updates in place too, without clobbering a field left blank.
+   - After a busyness click, the bot edits the message in place, replacing that day's button row with `✅ Sobota dd.mm — Busy`.
+   - `ADD NOTE` opens a modal (free-text `poznamka` + `sold_product` count, both optional). On submit, the bot edits the message again, inserting a `*poznámka přidána*` marker under that day's `ADD NOTE` row (no separate confirmation message) — re-submitting replaces the marker instead of stacking duplicates.
 
 3. **Interactions endpoint** (Cloudflare Worker, TypeScript)
    - Receives Discord interaction POSTs, verifies Ed25519 request signature (required by Discord).
-   - Writes/updates the row in Postgres: `(date, busyness, note, logged_at)`.
-   - Responds with message edit (confirmation state).
+   - Talks to Postgres via `@neondatabase/serverless` (HTTP-based — Workers can't open raw TCP sockets, so the usual `pg` driver doesn't work here).
+   - Busyness click: upserts `user_input (den, visited_id, source='live')`, looking up `visited_id` by name rather than a hardcoded id.
+   - Note modal submit: `UPDATE user_input SET poznamka, sold_product WHERE den = ...` — update-only, since `visited_id` is `NOT NULL` a note can't be the first thing logged for a day (busyness button first, note is the optional follow-up).
+   - Responds with a message edit (`UPDATE_MESSAGE`) in both cases — no separate ephemeral confirmations.
 
 4. **Database** (Neon Postgres free tier) — schema in `db/schema.sql`
    - `weathers` (číselník): weather code label, from `WEATHER_CODES` in `src/forecast.py`
-   - `visited` (číselník): busyness scale (nikdo/velmi slabe/slabe/stredni/hodne/naval) — shared by both the bot's predicted verdict and my logged reality, same scale either way
+   - `visited` (číselník): busyness scale (velmi slabe/slabe/stredni/hodne/naval = Dead/Slow/Normal/Busy/Slammed) — shared by both the bot's predicted verdict and my logged reality, same 5-level scale either way
    - `weather_prediction`: what the bot predicted — `den` (Sat/Sun forecast) + `predikce_den` (Thu or Fri, the day the job ran) as a pair, weather numbers, `predikce_navstevnost_id` (rule engine verdict, phase 3), `created_at`
    - `user_input`: what actually happened — `den` (unique, upsert on re-click), `visited_id`, `sold_product` (units sold, via modal), `poznamka` (free-text note, via modal), `source` (live | backfill), `logged_at`
    - `weather_actual`: not yet designed — deferred to phase 4 (post-hoc actual weather from Open-Meteo archive, so end-of-season analysis can separate "bad forecast" from "bad rule")
@@ -149,7 +160,6 @@ Workplace: Bělá 87, 747 23 Bělá (Opava district, CZ). Resolve exact `LAT`/`L
 
 ## Open questions
 
-- Exact busyness scale semantics — define each of the 5 levels once, in writing, before logging starts (label consistency matters more than label granularity).
 - Do work hours vary by day/month? Rules need opening-hours windows to evaluate weather against.
 - Tips/earnings as a second logged metric? More signal, slightly more friction — decide in Phase 2.
 - Next season: replace hand rules with a simple model trained on season 1? (Nice v2 story, out of scope now.)

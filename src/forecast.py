@@ -14,6 +14,11 @@ import requests
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 DISCORD_API = "https://discord.com/api/v10"
 
+# Message flag that switches the payload to Components V2, needed for the
+# divider line between Saturday and Sunday — classic embeds can't put
+# anything between fields, only Components V2's Separator can.
+IS_COMPONENTS_V2 = 1 << 15
+
 # Weather code groups (WMO codes used by Open-Meteo)
 WEATHER_CODES = {
     0: "slunečno ☀️",
@@ -135,7 +140,11 @@ def embed_color(fields: list[dict]) -> int:
     return 0x2ECC71      # green — looking dry
 
 
-def discord_dm(token: str, user_id: str, embed: dict) -> None:
+def text(content: str) -> dict:
+    return {"type": 10, "content": content}
+
+
+def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     headers = {"Authorization": f"Bot {token}"}
     # 1. open (or reuse) the DM channel with me
     r = requests.post(
@@ -144,10 +153,12 @@ def discord_dm(token: str, user_id: str, embed: dict) -> None:
     )
     r.raise_for_status()
     channel_id = r.json()["id"]
-    # 2. send the message as an embed (title, colored border, fields, footer)
+    # 2. send the message as Components V2 (no "embeds" alongside it)
     r = requests.post(
         f"{DISCORD_API}/channels/{channel_id}/messages",
-        headers=headers, json={"embeds": [embed]}, timeout=30,
+        headers=headers,
+        json={"flags": IS_COMPONENTS_V2, "components": components},
+        timeout=30,
     )
     r.raise_for_status()
 
@@ -174,25 +185,30 @@ def main() -> None:
         summarize_day(hourly, sunday, work_start, work_end),
     ]
 
-    embed = {
-        "title": "📋 Víkendová předpověď — Bělá",
-        "description": f"otevřeno {work_start}:00–{work_end}:00",
-        "color": 0x3498DB,  # flat blue for v1; embed_color() parked for phase 3 verdict rules
-        # Discord already adds spacing between description/fields and between
-        # each field on its own — no manual spacer fields needed.
-        "fields": [
-            {"name": fields[0]["name"], "value": fields[0]["value"], "inline": False},
-            {"name": fields[1]["name"], "value": fields[1]["value"], "inline": False},
-        ],
-        "footer": {"text": f"v1 · odesláno {czech_day(today)} {today.strftime('%d.%m.%Y')} · pravidla vyhodnocení přijdou ve fázi 3"},
-        "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
-    }
+    now = dt.datetime.now(dt.timezone.utc)
+    components = [
+        {
+            "type": 17,  # Container — accent bar + grouped content, mirrors the old embed look
+            "accent_color": 0x3498DB,  # flat blue for v1; embed_color() parked for phase 3 verdict rules
+            "components": [
+                text(f"📋 **Víkendová předpověď — Bělá**\notevřeno {work_start}:00–{work_end}:00"),
+                text(f"{fields[0]['name']}\n{fields[0]['value']}"),
+                {"type": 14, "divider": True, "spacing": 2},
+                text(f"{fields[1]['name']}\n{fields[1]['value']}"),
+                text(
+                    f"-# v1 · odesláno {czech_day(today)} {today.strftime('%d.%m.%Y')} "
+                    f"· pravidla vyhodnocení přijdou ve fázi 3 · <t:{int(now.timestamp())}:f>"
+                ),
+            ],
+        },
+    ]
 
     if dry_run:
         import json
-        print(json.dumps(embed, indent=2, ensure_ascii=False))
+        sys.stdout.reconfigure(encoding="utf-8")
+        print(json.dumps(components, indent=2, ensure_ascii=False))
         return
-    discord_dm(token, user_id, embed)
+    discord_dm(token, user_id, components)
     print("Forecast DM sent.")
 
 
