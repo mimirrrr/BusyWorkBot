@@ -43,6 +43,16 @@ python src/forecast.py --dry-run     # prints the message, no Discord needed
 For a real local send, copy `.env.example` to `.env` and fill in the token
 and user ID (`.env` is gitignored).
 
+## Tests
+
+Pure-function unit tests (rule engine, date math, formatting — no DB or
+Discord calls needed):
+
+```
+pip install -r requirements-dev.txt
+pytest -v
+```
+
 ## Notes
 
 - Actions cron is UTC; `0 15 * * THU,FRI` = 17:00 CEST. The season runs

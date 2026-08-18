@@ -35,6 +35,13 @@ python src/season_reminder.py --dry-run
 ```
 For a real local send, copy `.env.example` to `.env` (gitignored) and fill in `DISCORD_BOT_TOKEN`/`DISCORD_USER_ID`/`DATABASE_URL`. `--dry-run` needs no `.env` except for `completeness_sweep.py` (always) and optionally `forecast.py`/`log_message.py` (only to preview DB-dependent parts locally).
 
+Unit tests (pure functions only — no DB, no Discord, no network):
+```
+pip install -r requirements-dev.txt
+pytest -v
+```
+`tests/test_pure_functions.py` covers the rule engine, date math, and formatting helpers across `src/`. If this suite is green but a live script fails, the fault is environment/DB/network, not this logic — see `pythonpath` config in `pyproject.toml`.
+
 Worker (`worker/`):
 ```
 cd worker
@@ -44,7 +51,7 @@ npm run deploy       # wrangler deploy
 ```
 Local Worker dev needs `worker/.dev.vars` (copy from `.dev.vars.example`, gitignored).
 
-There is no JS/TS test runner and no Python test suite configured yet — verification is `--dry-run` for the Python scripts and `npm run typecheck` for the Worker.
+There is no JS/TS test runner configured yet — verification there is `npm run typecheck`. Python has a pure-function `pytest` suite (`tests/test_pure_functions.py`, see Commands above); anything DB/Discord-touching is still verified via `--dry-run`.
 
 ## Database
 
