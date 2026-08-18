@@ -22,14 +22,16 @@ A Discord bot that predicts how busy my weekend outdoor gastro shifts will be ba
 
 ```
 GitHub Actions (cron)                    Cloudflare Worker (serverless)
-├─ Thu+Fri: forecast messages ─► Discord ◄── button click interactions
-├─ Monday: logging message      channel        │ verify signature
-└─ Sunday PM: season sweep                     ▼
-                                         Postgres (Neon free tier)
+├─ Thu+Fri: forecast messages ─► Discord ◄── button/modal interactions
+├─ Monday: logging message         DM          │ verify signature
+├─ Tuesday: completeness sweep                 ▼
+└─ ~April 20 (yearly): season prompt     Postgres (Neon free tier)
                                                │
                                 End-of-season report pipeline
                                 (pandas + matplotlib → LLM narrative)
 ```
+(Plus a monthly no-op keepalive commit, unrelated to the message flow above —
+see Component 8.)
 
 **No always-on server.** Scheduled sends via GitHub Actions cron hitting Discord webhook/API. Button clicks handled by Discord Interactions endpoint (HTTP POST) on a Cloudflare Worker free tier.
 
@@ -50,7 +52,7 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
      | Normal | 17–20°C or 34°C+ | 30–50% | zataženo / mrholení |
      | Slow | 14–17°C or 34°C+ | 50–80% | mrholení / slabý déšť |
      | Dead | 14–17°C or 37°C+ | 80–100% | slabý déšť – bouřky |
-   - Post prediction to Discord channel: per-day verdict + key weather numbers + confidence.
+   - Post prediction via DM: per-day verdict + key weather numbers + confidence.
    - Message renders as Components V2 (Container with the blue accent bar + a Separator between the Saturday and Sunday blocks) — same building blocks as the Monday logging message, so both messages share one visual style.
    - Include last weekend's prediction vs. logged reality ("last week I said Busy, you logged Normal").
    - Store the prediction in DB (so accuracy is checked against what was *actually predicted*, no hindsight).
@@ -69,17 +71,20 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
    - Talks to Postgres via `@neondatabase/serverless` (HTTP-based — Workers can't open raw TCP sockets, so the usual `pg` driver doesn't work here).
    - Busyness click: upserts `user_input (den, visited_id, source='live')`, looking up `visited_id` by name rather than a hardcoded id.
    - Note modal submit: `UPDATE user_input SET poznamka, sold_product WHERE den = ...` — update-only, since `visited_id` is `NOT NULL` a note can't be the first thing logged for a day (busyness button first, note is the optional follow-up).
-   - Responds with a message edit (`UPDATE_MESSAGE`) in both cases — no separate ephemeral confirmations.
+   - Season-setup button opens a modal (two free-text `den.měsíc` fields); on submit, parses both dates and upserts the singleton `season_config` row. Re-prompts (ephemeral message) instead of guessing on anything that doesn't parse to a real calendar date.
+   - Responds with a message edit (`UPDATE_MESSAGE`) in all these cases — no separate ephemeral confirmations, except the re-prompt above and the invalid-`sold_product` case.
 
 4. **Database** (Neon Postgres free tier) — schema in `db/schema.sql`
    - `weathers` (číselník): weather code label, from `WEATHER_CODES` in `src/forecast.py`
    - `visited` (číselník): busyness scale (velmi slabe/slabe/stredni/hodne/naval = Dead/Slow/Normal/Busy/Slammed) — shared by both the bot's predicted verdict and my logged reality, same 5-level scale either way
-   - `weather_prediction`: what the bot predicted — `den` (Sat/Sun forecast) + `predikce_den` (Thu or Fri, the day the job ran) as a pair, weather numbers, `predikce_navstevnost_id` (rule engine verdict, phase 3), `created_at`
+   - `weather_prediction`: what the bot predicted — `den` (Sat/Sun forecast) + `predikce_den` (Thu or Fri, the day the job ran) as a pair, weather numbers, `predikce_navstevnost_id` (rule engine verdict), `created_at`
    - `user_input`: what actually happened — `den` (unique, upsert on re-click), `visited_id`, `sold_product` (units sold, via modal), `poznamka` (free-text note, via modal), `source` (live | backfill), `logged_at`
+   - `season_config`: singleton row (`id` fixed to 1) holding this year's `season_start`/`season_end` — see Component 8. Set via Discord, never edited by hand.
    - `weather_actual`: not yet designed — deferred to phase 4 (post-hoc actual weather from Open-Meteo archive, so end-of-season analysis can separate "bad forecast" from "bad rule")
 
-5. **Completeness sweep** (GitHub Actions cron, weekly + end of season)
-   - Query for unlogged past workdays → nag message in Discord listing missing dates, with the same button UI to fill them.
+5. **Completeness sweep** (GitHub Actions cron, Tuesday ~21:00 local — after Monday's logging message has had its shot)
+   - Query for Sat/Sun days since the first-ever logged day with no `user_input` row → nag DM listing them, reusing the Monday message's exact button/custom_id scheme so the Worker needs no changes to handle it. Sends nothing when nothing's missing.
+   - Caps at 10 days per message (Discord's component-count ceiling) with a "+N more" note; the rest catch up on the next weekly run.
    - End of season: final sweep until dataset is 100% labeled.
 
 6. **Backfill (one-time script)**
@@ -91,6 +96,11 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
    - **Code (pandas/matplotlib):** prediction accuracy overall and per rule, confusion matrix (predicted vs. actual busyness), busyness vs. temperature/rain scatter plots, live vs. backfill split, forecast-vs-actual-weather error contribution.
    - **LLM (any API):** receives the computed stats JSON only → writes narrative summary ("your rain rule held 80% of the time; the temperature threshold added nothing"). Prompt forbids inventing numbers.
    - Output: Markdown report + PNG charts, committed to repo / posted to Discord.
+
+8. **Season boundary + keepalive** (GitHub Actions cron)
+   - The work season is shorter than the calendar year, but every cron fires year-round regardless — GitHub's scheduler has no concept of "season." `season_config` gates the other jobs: forecast/logging/sweep all check it right after computing today's date and quietly return (no Discord call, no DB write) when outside `[season_start, season_end]`. Fails **open** (keeps running) if the table's never been configured, so nothing breaks before the first setup.
+   - Once a year (~April 20), `src/season_reminder.py` DMs a button that opens a modal (two `den.měsíc` fields) to set that window — see Component 3.
+   - Separately, `.github/workflows/keepalive.yml` makes a trivial empty commit to `main` on the 1st of every month, year-round. GitHub auto-disables a repo's scheduled workflows after 60 days with no repository activity, and the season itself (2.5.–4.10., ~5 months) is longer than that — without this, the schedules could get disabled **mid-season**, not just over winter. Whether a scheduled workflow's own runs count as "activity" for that rule is unclear from GitHub's docs, so this sidesteps the ambiguity with an unambiguous real push instead.
 
 ---
 
