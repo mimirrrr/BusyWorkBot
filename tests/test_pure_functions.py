@@ -129,6 +129,50 @@ def test_summarize_day_aggregates_correctly():
 
 
 # ---------------------------------------------------------------------------
+# forecast.py — summarize_actual_day (weather_actual, no probability/verdict)
+# ---------------------------------------------------------------------------
+
+def _fake_archive_hourly(day, hours, temps, precip, wind, codes):
+    return {
+        "time": [f"{day.isoformat()}T{h:02d}:00" for h in hours],
+        "temperature_2m": temps,
+        "precipitation": precip,
+        "wind_speed_10m": wind,
+        "weather_code": codes,
+    }
+
+
+def test_summarize_actual_day_no_data_in_working_hours():
+    day = dt.date(2026, 8, 22)
+    hourly = _fake_archive_hourly(day, hours=[3, 4], temps=[10, 11], precip=[0, 0],
+                                   wind=[5, 5], codes=[0, 0])
+    result = forecast.summarize_actual_day(hourly, day, work_start=9, work_end=20)
+    assert result["has_data"] is False
+
+
+def test_summarize_actual_day_aggregates_correctly():
+    day = dt.date(2026, 8, 22)
+    hourly = _fake_archive_hourly(
+        day,
+        hours=[9, 10, 11],
+        temps=[20, 25, 22],
+        precip=[0.0, 1.5, 0.0],
+        wind=[5, 12, 8],
+        codes=[1, 1, 3],  # code 1 appears twice -> dominant
+    )
+    result = forecast.summarize_actual_day(hourly, day, work_start=9, work_end=20)
+    assert result["has_data"] is True
+    assert result["teplota_min"] == 20
+    assert result["teplota_max"] == 25
+    assert result["srazky"] == 1.5
+    assert result["wind_speed"] == 12
+    assert result["weather_label"] == "lehce zataženo"
+    # no chance_rain/verdict — neither concept applies to actual weather
+    assert "chance_rain" not in result
+    assert "verdict" not in result
+
+
+# ---------------------------------------------------------------------------
 # forecast.py — comparison_line (Friday's "last weekend" recap text)
 # ---------------------------------------------------------------------------
 

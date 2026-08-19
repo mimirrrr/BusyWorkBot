@@ -6,8 +6,23 @@ actually happened via one-tap Discord buttons, and at the end of the season
 reports how well weather predicted my shifts.
 
 Full roadmap: [docs/PLAN.md](docs/PLAN.md). **Current status: Phase 4** —
-forecasts, logging, rule-engine predictions, and the weekly completeness
-sweep are all live; historical backfill is the remaining piece.
+forecasts, logging, rule-engine predictions, the weekly completeness sweep,
+and historical backfill (labeling + weather) are all live; remaining piece
+is general error-handling hardening before Phase 5's end-of-season report.
+
+## Weekly cadence
+
+Everything below is Europe/Prague time; full details in
+[CLAUDE.md](CLAUDE.md#weekly-cadence).
+
+| When | What happens |
+|---|---|
+| Thu 17:00 | Early Sat/Sun forecast DM |
+| Fri 17:00 | Official forecast DM, + last-weekend recap |
+| Mon 08:00 | Busyness-logging buttons DM |
+| Tue 21:00 | Backfills actual weather (silent) + nags for unlogged days |
+| ~Apr 20 (yearly) | Season-window setup prompt |
+| Monthly | Keepalive commit (stops GitHub disabling the cron jobs) |
 
 ## How it works (phase 1)
 

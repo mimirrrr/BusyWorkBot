@@ -13,6 +13,7 @@ import psycopg
 import requests
 
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
 DISCORD_API = "https://discord.com/api/v10"
 
 # Message flag that switches the payload to Components V2, needed for the
@@ -121,6 +122,59 @@ def fetch_forecast(lat: float, lon: float, start: dt.date, end: dt.date, tz: str
     r = requests.get(OPEN_METEO, params=params, timeout=30)
     r.raise_for_status()
     return r.json()
+
+
+def fetch_archive(lat: float, lon: float, start: dt.date, end: dt.date, tz: str) -> dict:
+    """Actual (post-hoc) weather from Open-Meteo's archive/reanalysis API —
+    a different dataset than fetch_forecast's live forecast, typically
+    published with several days of lag (see src/completeness_sweep.py's
+    ARCHIVE_LAG_DAYS). No precipitation_probability here: that's a
+    forecast-uncertainty concept, and the archive API returns it as null
+    for every hour regardless, so it's not requested at all.
+    """
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m,precipitation,wind_speed_10m,weather_code",
+        "timezone": tz,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+    }
+    r = requests.get(OPEN_METEO_ARCHIVE, params=params, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def summarize_actual_day(hourly: dict, day: dt.date, work_start: int, work_end: int) -> dict:
+    """Like summarize_day, but for actual (archive) weather: no rain
+    probability and no verdict, since neither concept applies to something
+    that already happened. Just the dominant condition and the totals/
+    extremes over working hours, for weather_actual.
+    """
+    idx = [
+        i for i, t in enumerate(hourly["time"])
+        if t.startswith(day.isoformat()) and work_start <= int(t[11:13]) < work_end
+    ]
+    if not idx:
+        return {"day": day, "has_data": False}
+
+    temps = [hourly["temperature_2m"][i] for i in idx]
+    rain = sum(hourly["precipitation"][i] or 0 for i in idx)
+    wind = max(hourly["wind_speed_10m"][i] for i in idx)
+    codes = [hourly["weather_code"][i] for i in idx]
+    dominant = max(set(codes), key=codes.count)
+    sky = WEATHER_CODES.get(dominant, f"code {dominant}")
+    weather_label = sky.rsplit(" ", 1)[0]
+
+    return {
+        "day": day,
+        "has_data": True,
+        "weather_label": weather_label,
+        "srazky": round(rain, 1),
+        "teplota_min": round(min(temps)),
+        "teplota_max": round(max(temps)),
+        "wind_speed": round(wind),
+    }
 
 
 def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) -> dict:

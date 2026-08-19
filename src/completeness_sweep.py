@@ -16,8 +16,15 @@ from zoneinfo import ZoneInfo
 import psycopg
 import requests
 
+from forecast import fetch_archive, summarize_actual_day
+
 DISCORD_API = "https://discord.com/api/v10"
 IS_COMPONENTS_V2 = 1 << 15
+
+# Open-Meteo's archive/reanalysis dataset is published with a lag; days more
+# recent than this are skipped rather than requested, and pick up
+# automatically on a later sweep once the data exists.
+ARCHIVE_LAG_DAYS = 5
 
 # (custom_id key, button label, button style) — must match BUSYNESS in
 # src/log_message.py and the `visited` seed order in db/schema.sql, since the
@@ -153,6 +160,101 @@ def fetch_missing_days(database_url: str, today: dt.date) -> list[dt.date]:
             return [row[0] for row in cur.fetchall()]
 
 
+def fetch_missing_weather_actual_days(database_url: str, cutoff: dt.date) -> list[dt.date]:
+    """Sat/Sun dates with no weather_actual row, from the season start
+    (same bootstrap as fetch_missing_days) through cutoff — deliberately not
+    "through yesterday" like the user_input check, since Open-Meteo's
+    archive data for very recent days may not be published yet; the caller
+    passes today - ARCHIVE_LAG_DAYS so those simply wait for a later run.
+    """
+    with psycopg.connect(database_url, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH bounds AS (
+                    SELECT COALESCE(
+                        (SELECT season_start FROM season_config WHERE id = 1),
+                        (SELECT MIN(den) FROM user_input)
+                    ) AS start_day
+                ),
+                weekend_days AS (
+                    SELECT d::date AS day
+                    FROM bounds, generate_series(start_day, %(cutoff)s::date, interval '1 day') AS d
+                    WHERE EXTRACT(DOW FROM d) IN (0, 6)
+                )
+                SELECT wd.day FROM weekend_days wd
+                LEFT JOIN weather_actual wa ON wa.den = wd.day
+                WHERE wa.den IS NULL
+                ORDER BY wd.day
+                """,
+                {"cutoff": cutoff},
+            )
+            return [row[0] for row in cur.fetchall()]
+
+
+def store_actual_weather(database_url: str, days: list[dict]) -> None:
+    """Upsert one weather_actual row per day that had archive data. Mirrors
+    forecast.py's store_predictions but keyed on den alone — only one
+    "actual" ever exists per day, unlike weather_prediction's Thu/Fri pair.
+    """
+    with psycopg.connect(database_url, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            for d in days:
+                if not d["has_data"]:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO weather_actual
+                        (den, pocasi_id, srazky, teplota_min, teplota_max, wind_speed)
+                    VALUES (
+                        %(den)s,
+                        (SELECT id_w FROM weathers WHERE name_w = %(weather_label)s),
+                        %(srazky)s, %(teplota_min)s, %(teplota_max)s, %(wind_speed)s
+                    )
+                    ON CONFLICT (den) DO UPDATE SET
+                        pocasi_id = EXCLUDED.pocasi_id,
+                        srazky = EXCLUDED.srazky,
+                        teplota_min = EXCLUDED.teplota_min,
+                        teplota_max = EXCLUDED.teplota_max,
+                        wind_speed = EXCLUDED.wind_speed
+                    """,
+                    {
+                        "den": d["day"],
+                        "weather_label": d["weather_label"],
+                        "srazky": d["srazky"],
+                        "teplota_min": d["teplota_min"],
+                        "teplota_max": d["teplota_max"],
+                        "wind_speed": d["wind_speed"],
+                    },
+                )
+
+
+def fill_missing_actual_weather(
+    database_url: str, today: dt.date, lat: float, lon: float, tz: str,
+    work_start: int, work_end: int,
+) -> None:
+    """Silently backfills weather_actual for any past weekend day old enough
+    that Open-Meteo's archive data should be published but isn't stored yet.
+    No Discord message — this is data the script fills in on its own, not
+    something logged by hand. Wrapped in a broad except so a flaky Open-Meteo
+    call here can't block the busyness nag below, which matters more.
+    """
+    try:
+        cutoff = today - dt.timedelta(days=ARCHIVE_LAG_DAYS)
+        missing = fetch_missing_weather_actual_days(database_url, cutoff)
+        if not missing:
+            print("Completeness sweep: no missing actual weather.")
+            return
+        data = fetch_archive(lat, lon, missing[0], missing[-1], tz)
+        hourly = data["hourly"]
+        days = [summarize_actual_day(hourly, day, work_start, work_end) for day in missing]
+        store_actual_weather(database_url, days)
+        filled = sum(1 for d in days if d["has_data"])
+        print(f"Completeness sweep: filled actual weather for {filled}/{len(missing)} day(s).")
+    except Exception as e:
+        print(f"Completeness sweep: actual-weather backfill failed, skipping this run: {e}")
+
+
 def is_in_season(database_url: str, today: dt.date) -> bool:
     """Fails OPEN: True (keep running) if season_config has no row yet, so
     nothing silently breaks before the season has ever been configured.
@@ -191,11 +293,18 @@ def main() -> None:
     user_id = "" if dry_run else env("DISCORD_USER_ID")
     database_url = env("DATABASE_URL")
     tz = env("TZ_NAME", "Europe/Prague")
+    lat = float(env("LAT", "49.97233"))       # Bělá 87, 747 23 Bělá (Opava)
+    lon = float(env("LON", "18.14489"))
+    work_start = int(env("WORK_START", "9"))
+    work_end = int(env("WORK_END", "20"))
 
     today = dt.datetime.now(ZoneInfo(tz)).date()
     if not is_in_season(database_url, today):
         print("Completeness sweep: outside the configured season, skipping.")
         return
+
+    if not dry_run:
+        fill_missing_actual_weather(database_url, today, lat, lon, tz, work_start, work_end)
 
     missing = fetch_missing_days(database_url, today)
 

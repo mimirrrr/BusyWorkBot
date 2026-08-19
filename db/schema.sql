@@ -1,10 +1,12 @@
 -- Shift Forecast Bot — Postgres schema (Neon)
 --
--- Two lookup tables (číselníky) + two fact tables:
+-- Two lookup tables (číselníky) + three fact tables:
 --   weathers            lookup: weather code -> Czech label (src/forecast.py WEATHER_CODES)
 --   visited             lookup: busyness scale, shared by BOTH the bot's prediction
 --                        and my logged reality (same 6-point scale either way)
 --   weather_prediction  fact:  what the bot predicted (written by the Thu/Fri GitHub Action)
+--   weather_actual      fact:  what the weather actually was, post-hoc (written by
+--                        src/completeness_sweep.py from Open-Meteo's archive API)
 --   user_input           fact:  what actually happened (written by the Cloudflare Worker
 --                        when I tap a busyness button, via the Monday logging message)
 --
@@ -49,6 +51,28 @@ CREATE TABLE weather_prediction (
     created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     UNIQUE (den, predikce_den)
+);
+
+-- ============================================================
+-- weather_actual — actual (post-hoc) weather, from Open-Meteo's archive
+-- API. Filled in automatically by src/completeness_sweep.py, ~5+ days
+-- after each weekend (the archive dataset's publication lag). Just one
+-- `den` per row, unlike weather_prediction's Thu/Fri pair — there's only
+-- ever one "actual". No chance_rain/verdict columns either: rain
+-- *probability* is a forecast-uncertainty concept that doesn't apply to
+-- something that already happened, and a verdict is a property of a
+-- prediction, not of the weather itself — the rule engine gets run
+-- against these numbers at analysis time (phase 5), not stored here.
+-- ============================================================
+CREATE TABLE weather_actual (
+    id_wa        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    den          DATE NOT NULL UNIQUE,
+    pocasi_id    INT NOT NULL REFERENCES weathers(id_w),
+    srazky       NUMERIC(4,1) NOT NULL,   -- mm; decimal so light rain isn't rounded to 0
+    teplota_min  INT NOT NULL,
+    teplota_max  INT NOT NULL,
+    wind_speed   INT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ============================================================
