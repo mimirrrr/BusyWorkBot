@@ -44,6 +44,17 @@ const BUSYNESS: Record<string, { label: string; visitedName: string }> = {
 
 const CZECH_DAYS = ["Neděle", "Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota"];
 
+// Live tracking started 2026-08-01. completeness_sweep.py now looks back to
+// season_start rather than the first-ever logged day, so it also surfaces
+// pre-tracking weekends recovered from memory — this cutoff is how a click
+// gets tagged live vs backfill, since both flow through the same log:
+// buttons. ISO YYYY-MM-DD strings compare correctly with plain <.
+const LIVE_TRACKING_START = "2026-08-01";
+
+function sourceForDate(isoDate: string): "live" | "backfill" {
+  return isoDate < LIVE_TRACKING_START ? "backfill" : "live";
+}
+
 function czechDay(isoDate: string): string {
   // Parse as UTC midnight so the weekday can't shift with the Worker's local TZ.
   const day = new Date(`${isoDate}T00:00:00Z`);
@@ -230,17 +241,19 @@ function json(data: unknown): Response {
  * hardcoded id, so reseeding db/schema.sql in a different order can't
  * silently mislabel past clicks.
  *
- * Re-clicking a day only touches visited_id/logged_at (misclick recovery,
- * per the plan) — it never resets poznamka/sold_product/source.
+ * source is set from the date (see LIVE_TRACKING_START) only on first
+ * insert. Re-clicking a day only touches visited_id/logged_at (misclick
+ * recovery, per the plan) — it never resets poznamka/sold_product/source.
  */
 async function logBusyness(databaseUrl: string, isoDate: string, key: string): Promise<void> {
   const sql = neon(databaseUrl);
   const visitedName = BUSYNESS[key].visitedName;
   const rows = await sql`SELECT id_v FROM visited WHERE name_v = ${visitedName}`;
   const visitedId = rows[0].id_v;
+  const source = sourceForDate(isoDate);
   await sql`
     INSERT INTO user_input (den, visited_id, source)
-    VALUES (${isoDate}, ${visitedId}, 'live')
+    VALUES (${isoDate}, ${visitedId}, ${source})
     ON CONFLICT (den) DO UPDATE SET visited_id = EXCLUDED.visited_id, logged_at = now()
   `;
 }

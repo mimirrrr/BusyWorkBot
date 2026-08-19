@@ -32,10 +32,13 @@ BUSYNESS = [
 
 CZECH_DAYS = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"]
 
-# Discord Components V2 messages cap at 40 total components; each missing day
-# costs 3 (header + busyness row + note row), so 10 days stays safely under
-# that with room to spare.
-MAX_DAYS_PER_MESSAGE = 10
+# Discord's 40-component cap counts recursively, not just top-level items:
+# each shown day costs 9 (header text=1, busyness row=1 wrapper+5 buttons,
+# note row=1 wrapper+1 button), plus a divider between every pair of shown
+# days (N-1), plus the leading warning line and, when there's overflow, the
+# "+N more" line: worst case 10*N + 1 <= 40, so N=3 is the most that's
+# always safe with margin to spare (N=4 hits exactly 41 with overflow).
+MAX_DAYS_PER_MESSAGE = 3
 
 
 def czech_day(day: dt.date) -> str:
@@ -117,17 +120,23 @@ def day_block(day: dt.date) -> list[dict]:
 
 
 def fetch_missing_days(database_url: str, today: dt.date) -> list[dt.date]:
-    """Sat/Sun dates with no user_input row, from the first-ever logged day
-    through yesterday. Bootstraps the start of the range off MIN(den) in
-    user_input instead of a hardcoded season-start date to keep in sync —
-    if nothing has ever been logged yet, this naturally returns nothing.
+    """Sat/Sun dates with no user_input row, from the season start through
+    yesterday (falls back to MIN(den) in user_input if season_config has no
+    row yet, matching is_in_season's fail-open behavior). Reaching back to
+    season_start rather than just the first-ever logged day is deliberate:
+    it's also how pre-live-tracking weekends get surfaced for backfill
+    labeling — the Worker tags each click's source as live/backfill by
+    comparing the date against its own cutoff constant.
     """
     with psycopg.connect(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 WITH bounds AS (
-                    SELECT MIN(den) AS start_day FROM user_input
+                    SELECT COALESCE(
+                        (SELECT season_start FROM season_config WHERE id = 1),
+                        (SELECT MIN(den) FROM user_input)
+                    ) AS start_day
                 ),
                 weekend_days AS (
                     SELECT d::date AS day

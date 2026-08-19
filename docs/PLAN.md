@@ -83,14 +83,14 @@ see Component 8.)
    - `weather_actual`: not yet designed — deferred to phase 4 (post-hoc actual weather from Open-Meteo archive, so end-of-season analysis can separate "bad forecast" from "bad rule")
 
 5. **Completeness sweep** (GitHub Actions cron, Tuesday ~21:00 local — after Monday's logging message has had its shot)
-   - Query for Sat/Sun days since the first-ever logged day with no `user_input` row → nag DM listing them, reusing the Monday message's exact button/custom_id scheme so the Worker needs no changes to handle it. Sends nothing when nothing's missing.
+   - Query for Sat/Sun days since `season_config.season_start` (falls back to the first-ever logged day if `season_config` is empty) with no `user_input` row → nag DM listing them, reusing the Monday message's exact button/custom_id scheme so the Worker needs no changes to *handle* it.
+   - Reaching back to season start rather than just the first-ever logged day is deliberate: it's also the backfill-labeling flow (see Component 6) — the same message, same buttons, spread automatically across however many Tuesdays it takes. The Worker distinguishes the two by tagging each click's `source` as `live`/`backfill`, comparing the date against a fixed cutoff (2026-08-01, when live tracking began) — the one thing that *does* change in the Worker. Sends nothing when nothing's missing.
    - Caps at 10 days per message (Discord's component-count ceiling) with a "+N more" note; the rest catch up on the next weekly run.
    - End of season: final sweep until dataset is 100% labeled.
 
-6. **Backfill (one-time script)**
-   - Pull historical weather 2.5.–31.7.2026 from Open-Meteo archive API.
-   - Label those weekends from memory via the same Discord button flow (batch of messages).
-   - Mark `source = backfill` — these labels are noisy and the analysis/writeup must say so. Distinguishing clean vs. noisy data is part of the point.
+6. **Backfill**
+   - *Labeling* (busyness from memory for 2.5.–31.7.2026, 13 weekends/26 days): handled entirely by Component 5 above — no separate script. `source = backfill` is set automatically by the Worker's date cutoff. These labels are noisy and the analysis/writeup must say so. Distinguishing clean vs. noisy data is part of the point.
+   - *Historical weather* for those same dates: still a separate one-time job — pull 2.5.–31.7.2026 from the Open-Meteo archive API into a `weather_actual`-style table (not yet designed; there's no `weather_prediction` row for these pre-tracking weekends since the bot wasn't running). Needed before Phase 5 can score backfill predictions against actual conditions.
 
 7. **End-of-season report**
    - **Code (pandas/matplotlib):** prediction accuracy overall and per rule, confusion matrix (predicted vs. actual busyness), busyness vs. temperature/rain scatter plots, live vs. backfill split, forecast-vs-actual-weather error contribution.
@@ -131,7 +131,7 @@ see Component 8.)
 - [x] Season boundary: `season_config` DB singleton + yearly Discord-modal prompt (`src/season_reminder.py`) to set it; forecast/logging/sweep all no-op outside the configured window (fails open if never set)
 - [x] Monthly keepalive commit (`.github/workflows/keepalive.yml`) — prevents GitHub's 60-day-inactivity auto-disable of scheduled workflows, which would otherwise silently kill everything (mid-season too, not just over winter — the season itself is >60 days)
 - [ ] Historical weather backfill 2.5.–31.7.2026 (13 weekends, 26 days)
-- [ ] Memory-labeling flow for past weekends (marked as backfill)
+- [x] Memory-labeling flow for past weekends (marked as backfill) — folded into the completeness sweep (Component 5): it now looks back to `season_config.season_start`, and the Worker source-tags each click by date cutoff
 - [ ] Error handling: API downtime, Actions cron quirks, timezone correctness (Europe/Prague), retries
 - **Done when:** dataset covers the whole season to date and jobs survive a failed API call.
 
