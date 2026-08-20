@@ -138,11 +138,11 @@ see Component 8.)
 
 **Tests done:**
 - [x] Pure-function unit tests (`tests/test_pure_functions.py`) — rule engine, date math, formatting, cross-file consistency. No DB/Discord needed.
+- [x] `pytest` wired into GitHub Actions (`.github/workflows/tests.yml`) — runs on every push/PR to `main`
 
 **Test ideas for later:**
 - Worker pure-function tests (`parseDayMonth`, `confirmDay`/`confirmNote`/`confirmSeason`, `verifyDiscordRequest`) — needs a JS/TS test runner (Vitest)
 - DB-integration tests for `is_in_season`, `store_predictions`, `fetch_missing_days`, `fetch_last_weekend_comparison` — needs a throwaway test DB
-- Wire `pytest` into GitHub Actions so it runs on every push/PR
 
 ### Phase 5 — end-of-season report (early October)
 - [ ] Analysis notebook/script → stats + charts
