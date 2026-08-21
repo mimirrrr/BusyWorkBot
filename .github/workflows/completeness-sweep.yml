@@ -2,10 +2,11 @@ name: completeness-sweep
 
 on:
   schedule:
-    # 19:00 UTC Tuesday = 21:00 (9pm) Prague (CEST) — right after Monday's
+    # 19:04 UTC Tuesday = 21:04 (9pm) Prague (CEST) — right after Monday's
     # 08:00 logging message has had its shot at filling in Sat/Sun, so a
-    # missed fill gets caught the very next evening.
-    - cron: "0 19 * * TUE"
+    # missed fill gets caught the very next evening. Off-the-hour on purpose:
+    # GitHub delays scheduled runs most right at the top of the hour.
+    - cron: "4 19 * * TUE"
   workflow_dispatch: {}   # manual "Run workflow" button for testing
 
 jobs:

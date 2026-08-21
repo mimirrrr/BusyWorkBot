@@ -13,10 +13,8 @@ import sys
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-import psycopg
-import requests
-
 from forecast import fetch_archive, summarize_actual_day
+from retry import connect_with_retry, request_with_retry
 
 DISCORD_API = "https://discord.com/api/v10"
 IS_COMPONENTS_V2 = 1 << 15
@@ -135,7 +133,7 @@ def fetch_missing_days(database_url: str, today: dt.date) -> list[dt.date]:
     labeling — the Worker tags each click's source as live/backfill by
     comparing the date against its own cutoff constant.
     """
-    with psycopg.connect(database_url, connect_timeout=10) as conn:
+    with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -167,7 +165,7 @@ def fetch_missing_weather_actual_days(database_url: str, cutoff: dt.date) -> lis
     archive data for very recent days may not be published yet; the caller
     passes today - ARCHIVE_LAG_DAYS so those simply wait for a later run.
     """
-    with psycopg.connect(database_url, connect_timeout=10) as conn:
+    with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -197,7 +195,7 @@ def store_actual_weather(database_url: str, days: list[dict]) -> None:
     forecast.py's store_predictions but keyed on den alone — only one
     "actual" ever exists per day, unlike weather_prediction's Thu/Fri pair.
     """
-    with psycopg.connect(database_url, connect_timeout=10) as conn:
+    with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             for d in days:
                 if not d["has_data"]:
@@ -259,7 +257,7 @@ def is_in_season(database_url: str, today: dt.date) -> bool:
     """Fails OPEN: True (keep running) if season_config has no row yet, so
     nothing silently breaks before the season has ever been configured.
     """
-    with psycopg.connect(database_url, connect_timeout=10) as conn:
+    with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT season_start, season_end FROM season_config WHERE id = 1")
             row = cur.fetchone()
@@ -271,19 +269,17 @@ def is_in_season(database_url: str, today: dt.date) -> bool:
 
 def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     headers = {"Authorization": f"Bot {token}"}
-    r = requests.post(
-        f"{DISCORD_API}/users/@me/channels",
+    r = request_with_retry(
+        "POST", f"{DISCORD_API}/users/@me/channels",
         headers=headers, json={"recipient_id": user_id}, timeout=30,
     )
-    r.raise_for_status()
     channel_id = r.json()["id"]
-    r = requests.post(
-        f"{DISCORD_API}/channels/{channel_id}/messages",
+    request_with_retry(
+        "POST", f"{DISCORD_API}/channels/{channel_id}/messages",
         headers=headers,
         json={"flags": IS_COMPONENTS_V2, "components": components},
         timeout=30,
     )
-    r.raise_for_status()
 
 
 def main() -> None:

@@ -9,8 +9,7 @@ import sys
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-import psycopg
-import requests
+from retry import connect_with_retry, request_with_retry
 
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
@@ -119,8 +118,7 @@ def fetch_forecast(lat: float, lon: float, start: dt.date, end: dt.date, tz: str
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
     }
-    r = requests.get(OPEN_METEO, params=params, timeout=30)
-    r.raise_for_status()
+    r = request_with_retry("GET", OPEN_METEO, params=params, timeout=30)
     return r.json()
 
 
@@ -140,8 +138,7 @@ def fetch_archive(lat: float, lon: float, start: dt.date, end: dt.date, tz: str)
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
     }
-    r = requests.get(OPEN_METEO_ARCHIVE, params=params, timeout=30)
-    r.raise_for_status()
+    r = request_with_retry("GET", OPEN_METEO_ARCHIVE, params=params, timeout=30)
     return r.json()
 
 
@@ -257,27 +254,25 @@ def text(content: str) -> dict:
 def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     headers = {"Authorization": f"Bot {token}"}
     # 1. open (or reuse) the DM channel with me
-    r = requests.post(
-        f"{DISCORD_API}/users/@me/channels",
+    r = request_with_retry(
+        "POST", f"{DISCORD_API}/users/@me/channels",
         headers=headers, json={"recipient_id": user_id}, timeout=30,
     )
-    r.raise_for_status()
     channel_id = r.json()["id"]
     # 2. send the message as Components V2 (no "embeds" alongside it)
-    r = requests.post(
-        f"{DISCORD_API}/channels/{channel_id}/messages",
+    request_with_retry(
+        "POST", f"{DISCORD_API}/channels/{channel_id}/messages",
         headers=headers,
         json={"flags": IS_COMPONENTS_V2, "components": components},
         timeout=30,
     )
-    r.raise_for_status()
 
 
 def is_in_season(database_url: str, today: dt.date) -> bool:
     """Fails OPEN: True (keep running) if season_config has no row yet, so
     nothing silently breaks before the season has ever been configured.
     """
-    with psycopg.connect(database_url, connect_timeout=10) as conn:
+    with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT season_start, season_end FROM season_config WHERE id = 1")
             row = cur.fetchone()
@@ -292,7 +287,7 @@ def store_predictions(database_url: str, predikce_den: dt.date, days: list[dict]
     (den, predikce_den) so a re-run (e.g. manual workflow_dispatch retry) on
     the same day overwrites rather than erroring.
     """
-    with psycopg.connect(database_url, connect_timeout=10) as conn:
+    with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             for d in days:
                 if not d["has_data"]:
@@ -340,7 +335,7 @@ def fetch_last_weekend_comparison(database_url: str, saturday: dt.date, sunday: 
     logged yet) — the caller must render that gracefully, not assume both exist.
     """
     results = []
-    with psycopg.connect(database_url, connect_timeout=10) as conn:
+    with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             for day in (saturday, sunday):
                 cur.execute(

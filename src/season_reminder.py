@@ -12,7 +12,7 @@ season. Doesn't touch the DB itself — this script only sends the prompt.
 import os
 import sys
 
-import requests
+from retry import request_with_retry
 
 DISCORD_API = "https://discord.com/api/v10"
 IS_COMPONENTS_V2 = 1 << 15
@@ -43,19 +43,17 @@ def text(content: str) -> dict:
 
 def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     headers = {"Authorization": f"Bot {token}"}
-    r = requests.post(
-        f"{DISCORD_API}/users/@me/channels",
+    r = request_with_retry(
+        "POST", f"{DISCORD_API}/users/@me/channels",
         headers=headers, json={"recipient_id": user_id}, timeout=30,
     )
-    r.raise_for_status()
     channel_id = r.json()["id"]
-    r = requests.post(
-        f"{DISCORD_API}/channels/{channel_id}/messages",
+    request_with_retry(
+        "POST", f"{DISCORD_API}/channels/{channel_id}/messages",
         headers=headers,
         json={"flags": IS_COMPONENTS_V2, "components": components},
         timeout=30,
     )
-    r.raise_for_status()
 
 
 def main() -> None:

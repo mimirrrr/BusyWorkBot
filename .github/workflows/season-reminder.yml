@@ -2,10 +2,11 @@ name: season-reminder
 
 on:
   schedule:
-    # April 20, 08:00 UTC = 10:00 CEST. A couple weeks ahead of a typical
+    # April 20, 08:04 UTC = 10:04 CEST. A couple weeks ahead of a typical
     # early-May season start, leaving room to set the dates before forecasts
-    # need to start going out.
-    - cron: "0 8 20 4 *"
+    # need to start going out. Off-the-hour on purpose: GitHub delays
+    # scheduled runs most right at the top of the hour.
+    - cron: "4 8 20 4 *"
   workflow_dispatch: {}   # manual "Run workflow" button for testing
 
 jobs:

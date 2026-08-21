@@ -69,7 +69,7 @@ npm run deploy       # wrangler deploy
 ```
 Local Worker dev needs `worker/.dev.vars` (copy from `.dev.vars.example`, gitignored).
 
-There is no JS/TS test runner configured yet — verification there is `npm run typecheck`. Python has a pure-function `pytest` suite (`tests/test_pure_functions.py`, see Commands above); anything DB/Discord-touching is still verified via `--dry-run`.
+There is no JS/TS test runner configured yet — verification there is `npm run typecheck`. Python has a pure-function `pytest` suite (`tests/test_pure_functions.py`, see Commands above); anything DB/Discord-touching is still verified via `--dry-run`. The pytest suite also runs automatically in CI (`.github/workflows/tests.yml`) on every push/PR to `main`.
 
 ## Database
 
@@ -97,6 +97,15 @@ The work season (outdoor gastro, roughly May–October) is shorter than the cale
 
 - **`season_config`** (see Database above) gates the three recurring scripts. `src/season_reminder.py` fires once a year and DMs a button that opens a modal to set it — see the `custom_id` note above.
 - **`.github/workflows/keepalive.yml`** makes an empty commit to `main` on the 1st of every month, year-round. This exists because GitHub auto-disables a repo's scheduled workflows after 60 days with no repository activity — and the work season itself (2.5.–4.10., ~5 months) is longer than that window, so without this, GitHub could disable the schedules **mid-season**, not just over winter. Whether a scheduled workflow's own executions count as "activity" for that rule is genuinely unclear from GitHub's docs, so this sidesteps the question with an unambiguous real git push instead of relying on an interpretation.
+
+## In-progress hardening (Phase 4)
+
+Full detail/rationale in `docs/PLAN.md` Phase 4; short version here since it touches conventions below:
+- Cron schedules in `.github/workflows/*.yml` are being offset off `:00` — GitHub delays scheduled runs most at the top of the hour.
+- `forecast.py`'s `today.weekday() == 4` branch (decides whether the last-weekend recap gets prepended) needs a guard against a delayed run landing on the wrong weekday.
+- A shared retry-with-backoff helper is being added for transient HTTP failures (timeout/429/5xx) — every `requests.get`/`requests.post` call in `src/` has a `timeout=` but currently zero retries.
+- `psycopg.connect` call sites (four, all `connect_timeout=10`) are getting light retries for transient Neon cold-start blips.
+- The Worker's `season_modal` handler is getting a sanity-range check on the parsed `season_start`/`season_end` — insurance against a fat-fingered date, not a DST fix (the season formula itself never crosses DST by construction).
 
 ## Conventions worth knowing
 

@@ -2,9 +2,12 @@ name: monday-logging
 
 on:
   schedule:
-    # 06:00 UTC = 08:00 Prague during summer time (CEST, UTC+2).
-    # Season runs 2.5.-4.10. so DST always applies; revisit if that changes.
-    - cron: "0 6 * * MON"
+    # 06:04 UTC = 08:04 Prague during summer time (CEST, UTC+2). Off-the-hour
+    # on purpose: GitHub delays scheduled runs most right at the top of the
+    # hour (its own docs name this as the highest-load slot).
+    # Season runs first-weekend-of-May to first-weekend-of-October, which by
+    # construction never crosses a DST boundary, so DST always applies here.
+    - cron: "4 6 * * MON"
   workflow_dispatch: {}   # manual "Run workflow" button for testing
 
 jobs:
