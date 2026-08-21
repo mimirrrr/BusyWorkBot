@@ -8,9 +8,9 @@ model, network), call_gemini returns a canned fallback string instead of
 blocking the whole report -- a narrative paragraph is a nice-to-have, not
 something worth losing the report over.
 
-Model id is confirmed current as of implementation (August 2026):
-gemini-3.7-flash. Deliberately not trusted blindly at runtime either --
-GEMINI_MODEL overrides it, so a future deprecation is a one-line env change,
+Model id: gemini-3.5-flash, per explicit instruction -- not the newest flash
+model available as of implementation (August 2026), by choice. GEMINI_MODEL
+still overrides it at runtime, so switching later is a one-line env change,
 not a code change.
 """
 
@@ -19,7 +19,7 @@ import json
 from retry import request_with_retry
 
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models"
-DEFAULT_MODEL = "gemini-3.7-flash"
+DEFAULT_MODEL = "gemini-3.5-flash"
 
 FALLBACK_NARRATIVE = (
     "Automatické shrnutí sezóny se nepodařilo vygenerovat (AI služba nebyla "
