@@ -102,10 +102,17 @@ CREATE TABLE user_input (
 -- season_modal handler), not edited by hand.
 -- ============================================================
 CREATE TABLE season_config (
-    id           INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    season_start DATE NOT NULL,
-    season_end   DATE NOT NULL,
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    id             INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    season_start   DATE NOT NULL,
+    season_end     DATE NOT NULL,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Set by src/season_report.py once the end-of-season report has been
+    -- generated and sent. Checked as
+    -- `report_sent_at IS NOT NULL AND report_sent_at >= updated_at` (not a
+    -- bare null-check) so it self-invalidates once next year's season_config
+    -- gets overwritten (the Worker's season_modal handler bumps updated_at
+    -- on every overwrite of this singleton row).
+    report_sent_at TIMESTAMPTZ
 );
 
 -- ============================================================

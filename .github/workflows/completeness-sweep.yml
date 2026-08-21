@@ -7,7 +7,19 @@ on:
     # missed fill gets caught the very next evening. Off-the-hour on purpose:
     # GitHub delays scheduled runs most right at the top of the hour.
     - cron: "4 19 * * TUE"
-  workflow_dispatch: {}   # manual "Run workflow" button for testing
+  workflow_dispatch:   # manual "Run workflow" button for testing
+    inputs:
+      dry_run:
+        description: "Pass --dry-run to season_report.py (does not affect completeness_sweep.py)"
+        type: boolean
+        default: true
+      as_of:
+        description: "Pass --as-of YYYY-MM-DD to season_report.py (overrides 'today' for the season-over gate)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write   # needed to commit reports/ back to main, see the last step below
 
 jobs:
   sweep:
@@ -28,3 +40,25 @@ jobs:
           DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TZ_NAME: "Europe/Prague"
+
+      - name: Season report (no-op until the season is over)
+        run: >
+          python src/season_report.py
+          ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+          ${{ github.event.inputs.as_of && format('--as-of {0}', github.event.inputs.as_of) || '' }}
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TZ_NAME: "Europe/Prague"
+
+      - name: Commit generated report, if any
+        # No-op most weeks -- reports/ doesn't exist until the season is over
+        # and season_report.py has actually generated a file.
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/ 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "season-report: update season report" && git push)

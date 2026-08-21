@@ -5,10 +5,12 @@ Sat/Sun forecast for my workplace every Thursday and Friday, will collect what
 actually happened via one-tap Discord buttons, and at the end of the season
 reports how well weather predicted my shifts.
 
-Full roadmap: [docs/PLAN.md](docs/PLAN.md). **Current status: Phase 4** —
+Full roadmap: [docs/PLAN.md](docs/PLAN.md). **Current status: Phase 5** —
 forecasts, logging, rule-engine predictions, the weekly completeness sweep,
-and historical backfill (labeling + weather) are all live; remaining piece
-is general error-handling hardening before Phase 5's end-of-season report.
+historical backfill, and error-handling hardening are all live. The
+end-of-season report (`src/season_report.py`) is implemented and runs
+every Tuesday alongside the completeness sweep, but stays a no-op until the
+season ends (4.10.2026) — see "End-of-season report" below.
 
 ## Weekly cadence
 
@@ -23,6 +25,17 @@ Everything below is Europe/Prague time; full details in
 | Tue 21:00 | Backfills actual weather (silent) + nags for unlogged days |
 | ~Apr 20 (yearly) | Season-window setup prompt |
 | Monthly | Keepalive commit (stops GitHub disabling the cron jobs) |
+
+## End-of-season report
+
+Once the season ends (4.10.2026), `src/season_report.py` — running as a
+second step in the same Tuesday `completeness-sweep.yml` job — takes over:
+it nags for any still-missing days first, and once the dataset is complete
+it builds a self-contained HTML report (accuracy vs. reality, a confusion
+matrix, live-vs-backfill accuracy, a weather-forecast-error breakdown, and
+a short AI-written summary from Google Gemini that only narrates the
+precomputed numbers, never calculates anything), DMs it to Discord as a
+file attachment, and commits it to [reports/season-2026.html](reports/season-2026.html).
 
 ## How it works (phase 1)
 

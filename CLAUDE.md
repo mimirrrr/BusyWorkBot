@@ -6,20 +6,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Discord bot that forecasts how busy the user's weekend outdoor-gastro shifts will be, based on weather. It DMs a Thu/Fri forecast, collects real outcomes via one-tap Discord buttons on Monday, and (eventually) reports prediction accuracy over the season. Full plan and current phase status: `docs/PLAN.md` (read this before making architectural changes — it defines the phase roadmap and what's intentionally deferred).
 
-Core design principle: **code computes, AI narrates.** All stats/accuracy/graphs come from deterministic Python (pandas/matplotlib in phase 5); an LLM only ever narrates precomputed results and must never calculate anything.
+Core design principle: **code computes, AI narrates.** All stats/accuracy/graphs come from deterministic Python (matplotlib — no pandas, dataset is only ~50 rows); an LLM (Google Gemini) only ever narrates precomputed results and must never calculate anything.
 
 ## Two independent runtimes
 
 This repo has two separately-deployed pieces that only communicate through Postgres — there is no shared process or shared code between them.
 
-1. **`src/` (Python)** — one-shot scripts triggered by GitHub Actions cron, each running for a few seconds and exiting. No persistent server. Every script except `season_reminder.py` calls `is_in_season()` right after computing `today` and returns early (no Discord call, no DB writes) outside the configured `season_config` window — see "Season boundary" below.
+1. **`src/` (Python)** — one-shot scripts triggered by GitHub Actions cron, each running for a few seconds and exiting. No persistent server. Every script except `season_reminder.py` and `season_report.py` calls `is_in_season()` right after computing `today` and returns early (no Discord call, no DB writes) outside the configured `season_config` window — see "Season boundary" below. `season_report.py` is the deliberate exception: it only makes sense *after* the season ends, so it has its own gating logic instead (see below).
    - `src/forecast.py` — Thu+Fri 17:00 Prague: pulls Open-Meteo forecast, runs the rule engine (`predict_verdict` — rain sets the base tier, extreme temp demotes one tier), DMs a Components V2 message to Discord, writes the prediction to `weather_prediction` (`store_predictions`). Friday's run only (the "official" prediction) prepends a second Container comparing last weekend's stored prediction against what was actually logged (`fetch_last_weekend_comparison`) — degrades gracefully (no crash) when either side is missing.
    - `src/log_message.py` — Monday 08:00 Prague: DMs the busyness-logging buttons message.
    - `src/completeness_sweep.py` — Tuesday 21:00 Prague, two independent jobs in one script:
      - Silently backfills `weather_actual` from Open-Meteo's archive API (`fill_missing_actual_weather`) for any past Sat/Sun since `season_config.season_start` that's old enough the archive dataset should be published (`ARCHIVE_LAG_DAYS = 5`) but isn't stored yet. No Discord message — wrapped in a broad `except` so an Open-Meteo hiccup here can't block the nag below.
      - DMs a nag (reusing `log_message.py`'s button/custom_id scheme) for any past Sat/Sun since `season_config.season_start` (falls back to the first-ever logged day if `season_config` is empty) with no `user_input` row. This is also the backfill-labeling flow for pre-live-tracking weekends — same buttons, no separate script; the Worker tags each click's `source` as `live`/`backfill` by comparing the date against its `LIVE_TRACKING_START` cutoff (2026-08-01). Caps at 3 days per message (Discord's 40-component cap counts nested buttons, not just top-level items), "+N more" catches up next week. Sends nothing when nothing's missing.
    - `src/season_reminder.py` — once yearly (~April 20): DMs a button that opens a Discord modal to set `season_config`. Doesn't touch the DB itself — the Worker's `season_modal` handler does the write.
-   - Deployed via `.github/workflows/forecast.yml`, `monday-log.yml`, `completeness-sweep.yml`, `season-reminder.yml`.
+   - `src/season_report.py` — implemented (full spec in `docs/PLAN.md` Component 7 and Phase 5 checklist). Runs as a *second step* within `completeness-sweep.yml`, right after `completeness_sweep.py`, on the same Tuesday cron — no separate workflow. Does **not** call `is_in_season()`; instead reads `season_config` directly and exits unless `today > season_end` (a `--as-of YYYY-MM-DD` CLI flag overrides "today" for testing before the real season ends). Once past `season_end`: reuses `completeness_sweep.py`'s `fill_missing_actual_weather`/`fetch_missing_days`/nag-building functions (cross-module import) — bounded by `season_end`, not real "today" — to keep covering the post-season completeness check that `completeness_sweep.py` itself stops doing once `is_in_season()` goes false. If anything's still missing, sends the nag and stops there. If everything's logged, builds `reports/season-<year>.html` via four helper modules (`report_stats.py` → `report_charts.py` → `report_narrative.py` → `report_html.py`), DMs it to Discord as a file attachment (`discord_dm_with_file`), and stamps `season_config.report_sent_at` so it doesn't regenerate on the next run.
+     - `src/report_stats.py` — pure functions (no DB/network), computes accuracy/confusion-matrix/scatter-point stats from the fetched season dataset. Unit-tested in `tests/test_report_stats.py`.
+     - `src/report_charts.py` — matplotlib, `Agg` backend, returns base64 PNG strings for inline `<img>` embedding.
+     - `src/report_narrative.py` — calls Google Gemini (flash tier) over raw HTTPS via `retry.request_with_retry`, given only the precomputed stats JSON; never invents numbers.
+     - `src/report_html.py` — assembles the single self-contained HTML file; AI narrative text goes in a visually distinct, explicitly labeled box, never blended with the program-computed content.
+   - Deployed via `.github/workflows/forecast.yml`, `monday-log.yml`, `completeness-sweep.yml` (also runs `season_report.py` as a second step), `season-reminder.yml`.
 
 2. **`worker/` (TypeScript, Cloudflare Worker)** — the always-listening piece, but serverless (no idle cost). Handles Discord's interaction POSTs: Ed25519 signature verification, button clicks, and modal submits. Reads/writes Postgres via `@neondatabase/serverless` (HTTP-based — Workers can't open raw TCP sockets, so the normal `pg` driver won't work here; don't add it).
 
@@ -41,6 +46,8 @@ What runs when, in order, during a normal in-season week (all times Europe/Pragu
 
 Every scheduled script above except `season_reminder.py` also checks `is_in_season()` first and no-ops entirely outside `[season_start, season_end]` (see "Season boundary" below) — so outside the work season, only the monthly keepalive and the yearly season prompt still fire.
 
+**Also runs every Tuesday (see `docs/PLAN.md` Component 7):** `src/season_report.py` runs as a second step in the same Tuesday `completeness-sweep.yml` job, right after `completeness_sweep.py`. Unlike everything else in this table, it deliberately does *not* use `is_in_season()` — it's a no-op every week while `today <= season_end`, then starts nagging (if data's incomplete) or generating `reports/season-<year>.html` (once complete) every Tuesday after that, until `season_config.report_sent_at` is set.
+
 ## Commands
 
 Python (`src/`), run from repo root:
@@ -50,6 +57,7 @@ python src/forecast.py --dry-run           # prints Discord payload JSON, no net
 python src/log_message.py --dry-run
 python src/completeness_sweep.py --dry-run # needs a real DATABASE_URL even in --dry-run — nothing to preview otherwise
 python src/season_reminder.py --dry-run
+python src/season_report.py --dry-run --as-of 2026-10-10  # see docs/PLAN.md Component 7. --as-of overrides "today" to exercise the post-season path before it's real; needs DATABASE_URL, GEMINI_API_KEY optional (falls back to canned narrative text without it), still writes reports/season-<year>.html to disk even in --dry-run
 ```
 For a real local send, copy `.env.example` to `.env` (gitignored) and fill in `DISCORD_BOT_TOKEN`/`DISCORD_USER_ID`/`DATABASE_URL`. `--dry-run` needs no `.env` except for `completeness_sweep.py` (always) and optionally `forecast.py`/`log_message.py` (only to preview DB-dependent parts locally).
 
@@ -58,7 +66,7 @@ Unit tests (pure functions only — no DB, no Discord, no network):
 pip install -r requirements-dev.txt
 pytest -v
 ```
-`tests/test_pure_functions.py` covers the rule engine, date math, and formatting helpers across `src/`. If this suite is green but a live script fails, the fault is environment/DB/network, not this logic — see `pythonpath` config in `pyproject.toml`.
+`tests/test_pure_functions.py` covers the rule engine, date math, and formatting helpers across `src/`; `tests/test_report_stats.py` covers `src/report_stats.py`'s accuracy/confusion-matrix/rule-component math. If this suite is green but a live script fails, the fault is environment/DB/network, not this logic — see `pythonpath` config in `pyproject.toml`.
 
 Worker (`worker/`):
 ```
@@ -81,7 +89,7 @@ Two lookup tables (číselníky) and three fact tables:
 - `weather_prediction` — what the bot predicted, keyed on `(den, predikce_den)`: `den` is the Sat/Sun being forecast, `predikce_den` is the day the job ran (Thu or Fri) — this lets both runs insert a row for the same weekend day without colliding, and lets Friday-vs-Thursday drift be measured later.
 - `weather_actual` — what the weather actually was, keyed unique on `den`. Filled in automatically by `src/completeness_sweep.py` from Open-Meteo's archive API, once the day is old enough that the archive dataset should be published (`ARCHIVE_LAG_DAYS = 5`). No `chance_rain`/verdict columns — rain probability doesn't apply to something that already happened, and a verdict is a property of a prediction; `predict_verdict()` gets run against these numbers at analysis time instead.
 - `user_input` — what actually happened, keyed unique on `den`. Upserted on busyness click (misclick recovery). `visited_id` is `NOT NULL`, so a note (`poznamka`/`sold_product`, via modal) can only ever `UPDATE` an existing row — the busyness button must be clicked first. `source` is `live` or `backfill`; backfilled labels are known-noisy and analysis must say so.
-- `season_config` — singleton row (`id` fixed to 1 via `CHECK`), this year's `season_start`/`season_end`. Set/overwritten via the `season_setup` button → `season_modal` flow, never edited by hand. Every scheduled script's `is_in_season()` fails **open** (keeps running) when this table is empty, so nothing breaks before it's ever been configured.
+- `season_config` — singleton row (`id` fixed to 1 via `CHECK`), this year's `season_start`/`season_end`. Set/overwritten via the `season_setup` button → `season_modal` flow, never edited by hand. Every scheduled script's `is_in_season()` fails **open** (keeps running) when this table is empty, so nothing breaks before it's ever been configured. Also holds `report_sent_at` (nullable `TIMESTAMPTZ`, see `docs/PLAN.md` Component 7), set by `src/season_report.py` once the end-of-season report has been generated and sent — checked as `report_sent_at IS NOT NULL AND report_sent_at >= updated_at` so it self-invalidates once next year's `season_config` gets overwritten (the Worker's `season_modal` handler already bumps `updated_at` on every overwrite).
 
 ## Cross-file coupling to preserve
 
@@ -90,6 +98,7 @@ These aren't enforced by types across the Python/TS boundary — keep them in sy
 - `custom_id` format: `log:<isoDate>:<key>` for busyness buttons, `note:<isoDate>` → modal `note_modal:<isoDate>`. The date is embedded directly in the id (not "sat"/"sun") so a stale message's buttons always resolve to the correct real date. Separately, `season_setup` → modal `season_modal` (fields `season_start`/`season_end`, free text `den.měsíc` e.g. `2.5.`) sets `season_config`; the Worker's `parseDayMonth()` re-prompts (ephemeral message) rather than guessing on anything that doesn't parse to a real calendar date.
 - Weather code labels: `WEATHER_CODES` in `src/forecast.py` (WMO codes) collapse to the same Czech label set seeded into `weathers` in `db/schema.sql`.
 - Message rendering: both DM messages use Discord Components V2 (`flags: 1 << 15`, no `content`/`embeds` alongside `components`) with a `Container` (type 17) + `Separator` (type 14, divider) between Saturday/Sunday blocks, so the two message types look visually consistent.
+- `season_config.report_sent_at >= updated_at` (see `docs/PLAN.md` Component 7) — `src/season_report.py`'s idempotency check silently depends on `worker/src/index.ts`'s `season_modal` handler bumping `updated_at = now()` on every singleton overwrite. If that ever stops happening, a stale `report_sent_at` from a prior season would incorrectly suppress next season's report.
 
 ## Season boundary
 

@@ -14,7 +14,7 @@ A Discord bot that predicts how busy my weekend outdoor gastro shifts will be ba
 
 ## Core principle
 
-**Code computes, AI narrates.** All statistics, accuracy numbers, and graphs come from deterministic code (pandas/matplotlib). An LLM only ever receives pre-computed results and writes the narrative summary. It never calculates anything. This is a deliberate architectural decision and belongs in the writeup.
+**Code computes, AI narrates.** All statistics, accuracy numbers, and graphs come from deterministic code (matplotlib — no pandas, see Component 7). An LLM (Google Gemini) only ever receives pre-computed results and writes the narrative summary. It never calculates anything. This is a deliberate architectural decision and belongs in the writeup.
 
 ---
 
@@ -25,10 +25,11 @@ GitHub Actions (cron)                    Cloudflare Worker (serverless)
 ├─ Thu+Fri: forecast messages ─► Discord ◄── button/modal interactions
 ├─ Monday: logging message         DM          │ verify signature
 ├─ Tuesday: completeness sweep                 ▼
-└─ ~April 20 (yearly): season prompt     Postgres (Neon free tier)
-                                               │
-                                End-of-season report pipeline
-                                (pandas + matplotlib → LLM narrative)
+│    + season report check               Postgres (Neon free tier)
+│    (season_report.py, same job,              │
+│     once the season is over — Component 7)   │
+└─ ~April 20 (yearly): season prompt     End-of-season report pipeline
+                                          (matplotlib → Gemini narrative)
 ```
 (Plus a monthly no-op keepalive commit, unrelated to the message flow above —
 see Component 8.)
@@ -93,10 +94,70 @@ see Component 8.)
    - *Labeling* (busyness from memory for 2.5.–31.7.2026, 13 weekends/26 days): handled entirely by Component 5's user_input nag — no separate script. `source = backfill` is set automatically by the Worker's date cutoff. These labels are noisy and the analysis/writeup must say so. Distinguishing clean vs. noisy data is part of the point.
    - *Historical weather* for those same dates: also handled by Component 5, via the actual-weather backfill job — no separate script. There's no `weather_prediction` row for these pre-tracking weekends (the bot wasn't running), so `weather_actual` is the only data phase 5 can score backfill busyness against — via a retroactive `predict_verdict()` call at analysis time, not a stored prediction.
 
-7. **End-of-season report**
-   - **Code (pandas/matplotlib):** prediction accuracy overall and per rule, confusion matrix (predicted vs. actual busyness), busyness vs. temperature/rain scatter plots, live vs. backfill split, forecast-vs-actual-weather error contribution.
-   - **LLM (any API):** receives the computed stats JSON only → writes narrative summary ("your rain rule held 80% of the time; the temperature threshold added nothing"). Prompt forbids inventing numbers.
-   - Output: Markdown report + PNG charts, committed to repo / posted to Discord.
+7. **End-of-season report** — `src/season_report.py`, run as a *second step* within the same `completeness-sweep.yml` workflow, right after `completeness_sweep.py`, on the same Tuesday cron. **No separate workflow/cron.** It does **not** use `is_in_season()` (unlike every other recurring script) — its job only makes sense once the season is *over*, at which point `completeness_sweep.py`'s own `is_in_season()` gate has already stopped that script from nagging/backfilling, so `season_report.py` has to cover that post-season tail itself:
+   - `main()` flow: `load_dotenv()`; parse `--dry-run`, `--as-of YYYY-MM-DD` (overrides "today", orthogonal to `--dry-run`, exists so the whole pipeline — including the season-over gate — can be exercised before the real season ends). Read `season_config` (`season_start`, `season_end`, `report_sent_at`, `updated_at`): no row → exit (nothing to report against, fails **closed** here unlike `is_in_season`'s fail-open elsewhere). `today <= season_end` → exit (the normal no-op path on every in-season run). `report_sent_at IS NOT NULL AND report_sent_at >= updated_at` → exit ("already sent" — see idempotency below).
+   - **Completeness check** (cross-module import from `completeness_sweep.py` — same pattern that module already uses on `forecast.py` — reusing `fill_missing_actual_weather`, `fetch_missing_days`, `day_block`, `text`, `czech_day_count`, `czech_more_days`, `MAX_DAYS_PER_MESSAGE`, `discord_dm`, `ARCHIVE_LAG_DAYS` as-is, no signature changes): call `fill_missing_actual_weather(..., today=min(real_today, season_end + timedelta(days=ARCHIVE_LAG_DAYS)), ...)` and `fetch_missing_days(database_url, today=season_end + timedelta(days=1))` — bounding both by `season_end`, **not** real "today", so the check can never drift into flagging *next* season's weekends once `season_config` gets overwritten (~April) if this row hasn't been re-checked since. If anything's missing, build and send the same nag layout as the regular Tuesday sweep and **return without generating a report this run**.
+   - **Report generation**, once nothing's missing:
+     - `fetch_season_dataset(database_url, season_start, season_end) -> list[dict]` in `src/season_report.py` — one query joining `weather_prediction` (latest per day, Friday winning over Thursday), `weather_actual`, `user_input`, and the `visited`/`weathers` labels, for every Sat/Sun in `[season_start, season_end]`:
+       ```sql
+       WITH season AS (
+           SELECT %(season_start)s::date AS season_start, %(season_end)s::date AS season_end
+       ),
+       weekend_days AS (
+           SELECT d::date AS den
+           FROM season, generate_series(season_start, season_end, interval '1 day') AS d
+           WHERE EXTRACT(DOW FROM d) IN (0, 6)
+       ),
+       latest_prediction AS (
+           SELECT DISTINCT ON (den) den, predikce_den, pocasi_id, chance_rain, srazky,
+                  teplota_min, teplota_max, wind_speed, predikce_navstevnost_id
+           FROM weather_prediction
+           ORDER BY den, predikce_den DESC   -- Friday's row wins over Thursday's
+       )
+       SELECT
+           wd.den,
+           ui.visited_id AS actual_visited_id, av.name_v AS actual_visited_name,
+           ui.source, ui.sold_product, ui.poznamka,
+           wa.pocasi_id AS actual_pocasi_id, aw.name_w AS actual_weather_label,
+           wa.srazky AS actual_srazky, wa.teplota_min AS actual_teplota_min,
+           wa.teplota_max AS actual_teplota_max, wa.wind_speed AS actual_wind_speed,
+           lp.predikce_den,
+           lp.pocasi_id AS pred_pocasi_id, pw.name_w AS pred_weather_label,
+           lp.chance_rain AS pred_chance_rain, lp.srazky AS pred_srazky,
+           lp.teplota_min AS pred_teplota_min, lp.teplota_max AS pred_teplota_max,
+           lp.wind_speed AS pred_wind_speed, pv.name_v AS pred_visited_name
+       FROM weekend_days wd
+       LEFT JOIN user_input ui        ON ui.den = wd.den
+       LEFT JOIN visited av            ON av.id_v = ui.visited_id
+       LEFT JOIN weather_actual wa     ON wa.den = wd.den
+       LEFT JOIN weathers aw           ON aw.id_w = wa.pocasi_id
+       LEFT JOIN latest_prediction lp  ON lp.den = wd.den
+       LEFT JOIN weathers pw           ON pw.id_w = lp.pocasi_id
+       LEFT JOIN visited pv            ON pv.id_v = lp.predikce_navstevnost_id
+       ORDER BY wd.den;
+       ```
+       Fetched via plain `cur.description`-zip into dicts, same as every other query in the codebase (no `psycopg.rows.dict_row`). Live weekends (Aug 2026+) get a real `pred_*` row; backfill weekends (2.5.–31.7.2026, no `weather_prediction` row since the bot wasn't running yet) get NULLs there.
+     - `src/report_stats.py` — **pure functions only, no DB/network/matplotlib**, unit-tested in `tests/test_report_stats.py`:
+       - `estimate_rain_prob_from_mm(srazky_mm: float) -> float` — piecewise-linear proxy (`0mm→0%`, `1mm→20%`, `5mm→50%`, `20mm+→100%` capped). Docstring must say explicitly this is **not a real probability**, only a retroactive-only stand-in for backfill weekends with no stored forecast.
+       - `retroactive_predicted_verdict(srazky_mm: float, teplota_max: float) -> str` — `forecast.predict_verdict(estimate_rain_prob_from_mm(srazky_mm), teplota_max)`. This is how backfill weekends get scored: "what would the rule engine have said, had it seen this actual weather as a forecast?"
+       - `rain_tier_only_verdict(max_rain_prob: float) -> str` — `forecast.TIERS` indexed by rain thresholds alone, no temp demotion, isolating the rain rule's standalone accuracy for the "per rule" breakdown.
+       - `to_verdict_key(visited_name: str | None) -> str | None` — `forecast.REVERSE_VISITED_NAMES` lookup, `None` passes through.
+       - `enrich_row(row: dict) -> dict` — one `fetch_season_dataset()` row → adds `predicted_verdict`, `prediction_kind` (`"forecast" | "retroactive" | None`), `actual_verdict`, `correct` (bool|None), `is_backfill` (bool), `complete` (bool). `enrich_dataset(rows: list[dict]) -> list[dict]` maps it over everything.
+       - `overall_accuracy(rows: list[dict]) -> dict` → `{"n","correct","accuracy"}`; `accuracy` is `None` at `n==0` (never divide by zero — needed since August testing runs against a partial season).
+       - `accuracy_by_split(rows: list[dict], key: str) -> dict[str, dict]` — groups by `is_backfill` or `prediction_kind`, applies `overall_accuracy` per group.
+       - `accuracy_by_rule_component(rows: list[dict]) -> dict` → `{"rain_tier_only": {...}, "full_rule": {...}, "temp_demotion_triggered_n", "temp_demotion_helped_n", "temp_demotion_hurt_n"}`.
+       - `confusion_matrix(rows: list[dict]) -> dict` → `{"labels": forecast.TIERS, "matrix": 5x5 int grid}`, built only from rows where `complete == True`.
+       - `weather_forecast_error(rows: list[dict]) -> dict` — `rain_mm_mae`, `temp_max_mae` over `prediction_kind == "forecast"` rows with actual weather present, plus `{"bad_forecast","bad_rule","both","neither"}` bucket counts disentangling *why* a live-weekend prediction was wrong — this is the "forecast-vs-actual-weather error contribution" chart's data source.
+       - `scatter_points(rows: list[dict], x_key: str, y_key: str) -> list[dict]` → `[{"x","y","verdict","is_backfill"}, ...]`.
+       - `season_summary_stats(rows: list[dict]) -> dict` — assembles everything above into one JSON-serializable blob; the **only** object handed to the charts/narrative/HTML modules below.
+       - Test coverage (`tests/test_report_stats.py`, flat `pytest` style matching `tests/test_pure_functions.py`): anchor-point tests for `estimate_rain_prob_from_mm`; tier-boundary tests for `rain_tier_only_verdict`; `enrich_row` on synthetic rows covering complete / missing-actual / missing-prediction / backfill; `overall_accuracy` at n=0 and n>0; `confusion_matrix` shape+counts on a small fixture; `accuracy_by_rule_component` on a case where the temp demotion helps vs. hurts.
+     - `src/report_charts.py` — matplotlib (`matplotlib.use("Agg")` before importing `pyplot`, required for headless CI): `render_accuracy_bar(stats)`, `render_confusion_matrix(stats)`, `render_scatter(points, title, xlabel, ylabel)`, `render_live_vs_backfill(stats)` — each returns a base64-encoded PNG string (`_fig_to_base64`: `savefig` to `BytesIO`, base64-encode, `plt.close(fig)`) for direct `<img src="data:image/png;base64,...">` embedding. No temp files, no separate image assets — keeps the report a single file.
+     - `src/report_narrative.py` — `build_prompt(stats: dict) -> str` (embeds the stats dict as JSON; explicit instruction not to invent or recompute any number, only narrate what's given) and `call_gemini(api_key: str, model: str, prompt: str) -> str`, calling Google Gemini directly over HTTPS via the existing `retry.request_with_retry` helper (no new SDK dependency — matches the plain-`requests` style already used for Discord/Open-Meteo). Call shape: `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`, header `X-goog-api-key: {api_key}`, body `{"contents":[{"parts":[{"text": prompt}]}], "generationConfig":{"temperature":0.3}}`, response text at `candidates[0].content.parts[0].text`, `timeout=60`. **Confirm the exact current Gemini flash model id/endpoint at implementation time** — parameterized via a `GEMINI_MODEL` env var rather than hardcoded, since a training-data-era model string shouldn't be trusted. Wrapped in a broad try/except — any failure (bad key, deprecated model, network) returns a canned fallback string instead of blocking the whole report.
+     - `src/report_html.py` — `render_html(stats, charts, narratives, season_start, season_end, generated_at) -> str`. Plain f-string/template assembly, no Jinja2 (avoids a new dependency for a single-consumer template). **AI-written narrative text renders inside a visually distinct `.ai-box` div — different background color, an explicit "AI-generated summary" label — never blended in with the program-computed numbers/charts.**
+   - **Delivery**: writes `reports/season-<year>.html` to disk (always, even in `--dry-run`, so a dry run can be opened and inspected locally). If not `--dry-run`: DMs it to Discord as a file attachment via `discord_dm_with_file(token, user_id, components, filename, file_bytes, content_type)` — a new multipart-upload variant of `discord_dm`, since every existing `discord_dm` call is JSON-only Components V2 with no attachment support (`payload_json` part with components/flags + `files={"files[0]": (filename, file_bytes, content_type)}`, sent via `request_with_retry(..., files=...)`, which already passes `**kwargs` through to `requests.request`); then `UPDATE season_config SET report_sent_at = now() WHERE id = 1`. Separately, the same generated file gets **committed to the repo** — a workflow step (`git add reports/ && git commit && git push`, mirroring Component 8's keepalive commit), not something the Python script does itself.
+   - **Idempotency**: nullable `season_config.report_sent_at TIMESTAMPTZ` column, checked as `report_sent_at IS NOT NULL AND report_sent_at >= updated_at` — not a bare null-check. The `>=` matters: `worker/src/index.ts`'s `season_modal` handler already bumps `updated_at = now()` on every yearly overwrite of the singleton row, so this comparison self-invalidates once next year's season gets configured, with zero changes needed in `worker/`.
+   - **Known limitation**: `season_config` is a singleton — if the report somehow still hasn't sent by the time `season_reminder.py`'s yearly flow overwrites it next April, the row needed to generate it correctly is gone. There's a ~6.5 month runway (Oct→April) for the weekly cron to catch up, which should be enough; not worth adding a DB read to `season_reminder.py` (deliberately DB-free today) to guard against it.
+   - **Discord attachment + Components V2 combined in one message is new** in this codebase — needs a real smoke test (small dummy file) before trusting it for the actual report send.
 
 8. **Season boundary + keepalive** (GitHub Actions cron)
    - The work season is shorter than the calendar year, but every cron fires year-round regardless — GitHub's scheduler has no concept of "season." `season_config` gates the other jobs: forecast/logging/sweep all check it right after computing today's date and quietly return (no Discord call, no DB write) when outside `[season_start, season_end]`. Fails **open** (keeps running) if the table's never been configured, so nothing breaks before the first setup.
@@ -150,10 +211,21 @@ see Component 8.)
 - DB-integration tests for `is_in_season`, `store_predictions`, `fetch_missing_days`, `fetch_last_weekend_comparison` — needs a throwaway test DB
 
 ### Phase 5 — end-of-season report (early October)
-- [ ] Analysis notebook/script → stats + charts
-- [ ] LLM narrative layer on computed results
-- [ ] Public writeup: architecture, honest accuracy numbers, what failed, what I'd measure differently next season
-- **Done when:** report is published and linked from the repo README + resume.
+Full spec (function signatures, SQL, workflow diff) in Component 7 above — this checklist is the implementation order, not a re-explanation.
+- [x] `db/schema.sql`: add `report_sent_at TIMESTAMPTZ` (nullable) to `season_config` + manually `ALTER TABLE season_config ADD COLUMN report_sent_at TIMESTAMPTZ;` against the live Neon instance (schema.sql has no migration tool — hand-applied, per existing convention)
+- [x] `requirements.txt`: add `matplotlib>=3.8` only — **no pandas** (season dataset is ~50 rows, plain dicts/lists match every other module's style; this is a deliberate deviation from this doc's earlier "pandas/matplotlib" wording) and **no Gemini SDK** (raw HTTPS via the existing `retry.py`, matching the plain-`requests` style already used for Discord/Open-Meteo)
+- [x] `src/report_stats.py` — pure stats module (see Component 7 for exact function signatures: `estimate_rain_prob_from_mm`, `retroactive_predicted_verdict`, `rain_tier_only_verdict`, `to_verdict_key`, `enrich_row`/`enrich_dataset`, `overall_accuracy`, `accuracy_by_split`, `accuracy_by_rule_component`, `confusion_matrix`, `weather_forecast_error`, `scatter_points`, `season_summary_stats`)
+- [x] `tests/test_report_stats.py` — flat pytest style matching `tests/test_pure_functions.py` (see Component 7 for exact coverage list); run `pytest -v` to confirm green before moving on — 15 tests, all green alongside the existing 30
+- [x] `src/report_charts.py` — matplotlib, `Agg` backend, base64-PNG-returning functions (see Component 7)
+- [x] `src/report_narrative.py` — Gemini call (see Component 7 for exact request/response shape); confirmed current model id via web search at implementation time (August 2026): `gemini-3.7-flash`, set as `DEFAULT_MODEL`, still overridable via `GEMINI_MODEL`
+- [x] `src/report_html.py` — self-contained HTML assembly, `.ai-box` styling for AI text (see Component 7)
+- [x] `src/season_report.py` — orchestrator: `fetch_season_dataset`, `discord_dm_with_file`, `main()` flow exactly as described in Component 7 (season/idempotency gates → completeness check/nag → report generation → delivery)
+- [x] `.github/workflows/completeness-sweep.yml` (modified existing file, not a new one): added `permissions: contents: write` at workflow level; added `GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}` to the env block; added a second `run` step (`python src/season_report.py`, no flags on the real scheduled run — it self-gates internally) right after the existing `python src/completeness_sweep.py` step; added `workflow_dispatch` inputs `dry_run` (bool, default `true`) and `as_of` (string), passed as extra args to the `season_report.py` step only (the `completeness_sweep.py` step is untouched); added a third step that commits `reports/` back to `main` if anything changed, skipped when `dry_run == 'true'`, mirroring `keepalive.yml`'s git-identity pattern
+- [x] `README.md`: bumped status line to Phase 5, added an "End-of-season report" section linking `reports/season-2026.html`
+- [x] `CLAUDE.md`: updated — "PLANNED, not yet implemented" language removed now the code has landed
+- [ ] Public writeup: architecture, honest accuracy numbers, what failed, what I'd measure differently next season — deferred until real season data exists to write about
+- **Verification before trusting the real October cron:** [x] `pytest -v` green (45 tests) → [x] `python src/season_report.py --dry-run --as-of 2026-10-10` locally against real `DATABASE_URL` — confirmed the season gate and completeness check correctly detect the still-mostly-unlabeled 2026 season and print the nag payload without touching Discord → [x] full report-generation path (stats → charts → narrative fallback → HTML) smoke-tested end-to-end with synthetic data (real `DATABASE_URL` has too many missing days to reach this path organically yet) and the rendered HTML opened/inspected for chart embedding + `.ai-box` styling → [ ] `workflow_dispatch` on `completeness-sweep.yml` with `dry_run=true, as_of=2026-10-10` to confirm the CI environment (headless matplotlib, secrets wiring) → [ ] a second `workflow_dispatch` with `dry_run=false` on a safe test `as_of` date to prove the real Discord multipart send + git-commit-back step — **the last two need a real GitHub Actions run and are still outstanding.**
+- **Done when:** report is published (committed to `reports/season-<year>.html`) and linked from the repo README + resume.
 
 ---
 
@@ -175,12 +247,12 @@ see Component 8.)
 | Chat/UI | Discord bot + message components (buttons, modals) | I live there; one-tap UX |
 | Click handling | Cloudflare Worker (interactions endpoint) | serverless, free tier |
 | DB | Neon Postgres free tier | real SQL, free |
-| Analysis | Python, pandas, matplotlib | deterministic, reproducible |
-| Narrative | any LLM API | summarizes computed stats only |
+| Analysis | Python, matplotlib | deterministic, reproducible (no pandas — season dataset is ~50 rows, plain dicts/lists suffice) |
+| Narrative | Google Gemini (flash tier) | summarizes computed stats only, never calculates |
 
 ## Secrets / config
 
-`DISCORD_BOT_TOKEN`, `DISCORD_PUBLIC_KEY`, `DISCORD_USER_ID` (bot DMs me directly, no channel), `DATABASE_URL`, `LLM_API_KEY`, workplace `LAT`/`LON`, timezone `Europe/Prague`. Stored in GitHub Actions secrets + Worker secrets. Never in the repo.
+`DISCORD_BOT_TOKEN`, `DISCORD_PUBLIC_KEY`, `DISCORD_USER_ID` (bot DMs me directly, no channel), `DATABASE_URL`, `GEMINI_API_KEY` (+ `GEMINI_MODEL` to pin the flash model id — see Component 7), workplace `LAT`/`LON`, timezone `Europe/Prague`. Stored in GitHub Actions secrets + Worker secrets. Never in the repo.
 
 Workplace: Bělá 87, 747 23 Bělá (Opava district, CZ). Resolve exact `LAT`/`LON` once via Open-Meteo's geocoding API (https://geocoding-api.open-meteo.com/v1/search?name=B%C4%9Bl%C3%A1) or maps, hardcode as config (approx. 49.9 N, 18.1 E — verify).
 
