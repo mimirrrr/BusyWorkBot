@@ -49,6 +49,34 @@ def test_predict_verdict_comfortable_temp_never_shifts_tier():
 
 
 # ---------------------------------------------------------------------------
+# forecast.py — is_official_run / scheduled_weekday (Thu-vs-Fri branch,
+# hardened against a delayed GitHub Actions run landing on the wrong day)
+# ---------------------------------------------------------------------------
+
+def test_scheduled_weekday_from_cron_string():
+    assert forecast.scheduled_weekday("4 15 * * THU") == 3
+    assert forecast.scheduled_weekday("4 15 * * FRI") == 4
+    assert forecast.scheduled_weekday("") is None  # workflow_dispatch/local run
+
+
+def test_is_official_run_trusts_schedule_over_todays_date():
+    # Friday's job, delayed past midnight into Saturday -- still official.
+    saturday = dt.date(2026, 8, 22) + dt.timedelta(days=1)
+    assert forecast.is_official_run("4 15 * * FRI", saturday) is True
+    # Thursday's job, delayed into Friday -- still NOT official (it's the
+    # early-picture run, even though today happens to look like Friday).
+    friday = dt.date(2026, 8, 21)
+    assert forecast.is_official_run("4 15 * * THU", friday) is False
+
+
+def test_is_official_run_falls_back_to_weekday_with_no_schedule():
+    friday = dt.date(2026, 8, 21)
+    thursday = dt.date(2026, 8, 20)
+    assert forecast.is_official_run("", friday) is True
+    assert forecast.is_official_run("", thursday) is False
+
+
+# ---------------------------------------------------------------------------
 # forecast.py / log_message.py — weekend date math
 # ---------------------------------------------------------------------------
 

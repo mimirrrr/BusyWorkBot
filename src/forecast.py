@@ -95,6 +95,38 @@ def env(name: str, default: str | None = None) -> str:
     return value
 
 
+def scheduled_weekday(schedule_cron: str) -> int | None:
+    """weekday() this run was scheduled for, per the cron string GitHub
+    actually fired (github.event.schedule, passed in as SCHEDULE_CRON --
+    forecast.yml has two schedule triggers, Thu and Fri, so this is how the
+    script tells them apart instead of guessing from today's date). None for
+    workflow_dispatch/local runs, which don't set it.
+    """
+    if "THU" in schedule_cron:
+        return 3
+    if "FRI" in schedule_cron:
+        return 4
+    return None
+
+
+def is_official_run(schedule_cron: str, today: dt.date) -> bool:
+    """True when this run should be treated as the "official" Friday
+    forecast: prepends the last-weekend recap, and its predikce_den is the
+    row accuracy scoring keys off (per docs/PLAN.md).
+
+    Prefers scheduled_weekday(schedule_cron) over today.weekday() -- a
+    severely delayed GitHub Actions run can execute on the wrong calendar
+    day (e.g. Friday's job rolling past midnight into Saturday), and
+    inferring purely from today's date would then silently drop the recap
+    instead of just running a day late. Falls back to weekday when there's
+    no schedule to go on (workflow_dispatch, local run, --dry-run).
+    """
+    expected = scheduled_weekday(schedule_cron)
+    if expected is not None:
+        return expected == 4
+    return today.weekday() == 4
+
+
 def next_weekend(today: dt.date) -> tuple[dt.date, dt.date]:
     """Upcoming Saturday and Sunday (if today is Saturday, that's this weekend)."""
     saturday = today + dt.timedelta(days=(5 - today.weekday()) % 7)
@@ -395,6 +427,18 @@ def main() -> None:
         print("Forecast: outside the configured season, skipping.")
         return
 
+    schedule_cron = os.environ.get("SCHEDULE_CRON", "")
+    expected_weekday = scheduled_weekday(schedule_cron)
+    if expected_weekday is not None and expected_weekday != today.weekday():
+        print(
+            f"Forecast: WARNING - scheduled for weekday {expected_weekday} "
+            f"('{schedule_cron}') but running on weekday {today.weekday()} "
+            f"({czech_day(today)}) - likely a delayed GitHub Actions run. "
+            f"Treating this as the "
+            f"{'official Friday' if is_official_run(schedule_cron, today) else 'early Thursday'} "
+            f"run based on the cron trigger, not today's date."
+        )
+
     saturday, sunday = next_weekend(today)
 
     data = fetch_forecast(lat, lon, saturday, sunday, tz)
@@ -410,7 +454,7 @@ def main() -> None:
 
     # Friday's is the "official" prediction used for accuracy scoring (per
     # docs/PLAN.md), so only Friday's message looks back at last weekend.
-    if today.weekday() == 4 and database_url:
+    if is_official_run(schedule_cron, today) and database_url:
         last_sat, last_sun = last_weekend(today)
         comparison = fetch_last_weekend_comparison(database_url, last_sat, last_sun)
         components.append({

@@ -7,7 +7,14 @@ on:
     # hour (its own docs name this as the highest-load slot).
     # Season runs first-weekend-of-May to first-weekend-of-October, which by
     # construction never crosses a DST boundary, so DST always applies here.
-    - cron: "4 15 * * THU,FRI"
+    #
+    # Two separate entries (not one "THU,FRI" cron) on purpose: GitHub sets
+    # github.event.schedule to the literal cron string that matched, so
+    # splitting them is what lets src/forecast.py (via SCHEDULE_CRON below)
+    # tell a Thursday run from a Friday run even if GitHub delays one badly
+    # enough that it executes on the wrong calendar day.
+    - cron: "4 15 * * THU"
+    - cron: "4 15 * * FRI"
   workflow_dispatch: {}   # manual "Run workflow" button for testing
 
 jobs:
@@ -33,3 +40,4 @@ jobs:
           TZ_NAME: "Europe/Prague"
           WORK_START: "9"
           WORK_END: "20"
+          SCHEDULE_CRON: ${{ github.event.schedule }}

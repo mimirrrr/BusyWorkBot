@@ -30,6 +30,15 @@ const InteractionResponseType = {
 
 const EPHEMERAL = 64; // message flag: visible only to the caller, not persisted
 
+// Sanity range for season_modal's free-text dates ("MM-DD", zero-padded so
+// lexical comparison works). Not a DST fix -- the "first weekend of May to
+// first weekend of October" formula never crosses a DST boundary by
+// construction (docs/PLAN.md) -- this is just insurance against a
+// fat-fingered date (e.g. "31.10." instead of "4.10.") slipping through the
+// free-text modal with no validation at all.
+const SEASON_START_RANGE = ["04-15", "05-15"] as const;
+const SEASON_END_RANGE = ["09-15", "10-15"] as const;
+
 // Position must match BUSYNESS in src/log_message.py and the `visited` seed
 // order in db/schema.sql (velmi slabe..naval) — the button's key maps to a
 // row by name lookup, not a hardcoded id, so reseeding order is the only
@@ -181,6 +190,26 @@ export default {
           });
         }
 
+        if (!inMonthDayRange(start.iso, SEASON_START_RANGE) || !inMonthDayRange(end.iso, SEASON_END_RANGE)) {
+          return json({
+            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            data: {
+              content: `Datum mimo očekávaný rozsah (začátek ${SEASON_START_RANGE[0]}–${SEASON_START_RANGE[1]}, konec ${SEASON_END_RANGE[0]}–${SEASON_END_RANGE[1]}) — zkontroluj překlep. Klepni na tlačítko a zkus to znovu.`,
+              flags: EPHEMERAL,
+            },
+          });
+        }
+
+        if (start.iso >= end.iso) {
+          return json({
+            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            data: {
+              content: `Začátek sezóny musí být před koncem. Klepni na tlačítko a zkus to znovu.`,
+              flags: EPHEMERAL,
+            },
+          });
+        }
+
         await saveSeasonConfig(env.DATABASE_URL, start.iso, end.iso);
         return json({
           type: InteractionResponseType.UPDATE_MESSAGE,
@@ -275,6 +304,12 @@ function parseDayMonth(input: string, year: number): { iso: string } | null {
   if (date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
   const iso = date.toISOString().slice(0, 10);
   return { iso };
+}
+
+/** True when iso's "MM-DD" falls within [range[0], range[1]] inclusive. */
+function inMonthDayRange(iso: string, range: readonly [string, string]): boolean {
+  const monthDay = iso.slice(5, 10);
+  return monthDay >= range[0] && monthDay <= range[1];
 }
 
 /**
