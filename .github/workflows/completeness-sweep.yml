@@ -14,7 +14,7 @@ on:
         type: boolean
         default: true
       as_of:
-        description: "Pass --as-of YYYY-MM-DD to season_report.py (overrides 'today' for the season-over gate)"
+        description: "Date ONLY, e.g. 2026-10-25 -- do NOT type --as-of here, the workflow adds that flag itself. Leave blank to use the real date."
         type: string
         default: ""
 

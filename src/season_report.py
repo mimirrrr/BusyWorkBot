@@ -140,6 +140,13 @@ def discord_dm_with_file(
     every existing discord_dm call is JSON-only Components V2 with no
     attachment support, and Discord requires the components payload as a
     payload_json form field (not a JSON body) once a file part is involved.
+
+    A bare multipart upload is NOT enough once the Components V2 flag is
+    set (confirmed by a real smoke test -- Discord returns 200 and the
+    message sends, but silently drops the file): the payload also needs an
+    explicit `attachments` entry mapping the upload to its files[N] index,
+    and a File component (type 13, attachment://<filename>) so it actually
+    renders in the layout instead of just being accepted and discarded.
     """
     headers = {"Authorization": f"Bot {token}"}
     r = request_with_retry(
@@ -147,7 +154,11 @@ def discord_dm_with_file(
         headers=headers, json={"recipient_id": user_id}, timeout=30,
     )
     channel_id = r.json()["id"]
-    payload = {"flags": IS_COMPONENTS_V2, "components": components}
+    payload = {
+        "flags": IS_COMPONENTS_V2,
+        "components": components + [{"type": 13, "file": {"url": f"attachment://{filename}"}}],
+        "attachments": [{"id": 0, "filename": filename}],
+    }
     request_with_retry(
         "POST", f"{DISCORD_API}/channels/{channel_id}/messages",
         headers=headers,
@@ -195,7 +206,17 @@ def main() -> None:
     load_dotenv()
     args = sys.argv[1:]
     dry_run = "--dry-run" in args
-    as_of = dt.date.fromisoformat(args[args.index("--as-of") + 1]) if "--as-of" in args else None
+    as_of = None
+    if "--as-of" in args:
+        raw = args[args.index("--as-of") + 1]
+        try:
+            as_of = dt.date.fromisoformat(raw)
+        except ValueError:
+            sys.exit(
+                f"--as-of expects a bare YYYY-MM-DD date, got {raw!r}. "
+                f"If you're using the completeness-sweep.yml workflow_dispatch form, "
+                f"put ONLY the date in the as_of box -- the workflow adds the --as-of flag itself."
+            )
 
     database_url = env("DATABASE_URL")
     tz = env("TZ_NAME", "Europe/Prague")
