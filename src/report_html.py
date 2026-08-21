@@ -10,13 +10,8 @@ computes, AI narrates" principle in CLAUDE.md/docs/PLAN.md.
 import datetime as dt
 import html as html_lib
 
+from common import czech_day
 from forecast import VERDICT_LABELS
-
-CZECH_DAYS = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"]
-
-
-def czech_day(day: dt.date) -> str:
-    return CZECH_DAYS[day.weekday()]
 
 
 def _fmt_date(iso_date: str | None) -> str:

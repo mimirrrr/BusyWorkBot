@@ -10,13 +10,11 @@ import { neon } from "@neondatabase/serverless";
 
 export interface Env {
   DISCORD_PUBLIC_KEY: string;
-  DISCORD_APPLICATION_ID: string;
   DATABASE_URL: string;
 }
 
 const InteractionType = {
   PING: 1,
-  APPLICATION_COMMAND: 2,
   MESSAGE_COMPONENT: 3,
   MODAL_SUBMIT: 5,
 } as const;
@@ -181,33 +179,19 @@ export default {
         const end = parseDayMonth(endRaw, year);
 
         if (!start || !end) {
-          return json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            data: {
-              content: `Nerozumím datu "${!start ? startRaw : endRaw}". Použij formát den.měsíc, např. 2.5. Klepni na tlačítko a zkus to znovu.`,
-              flags: EPHEMERAL,
-            },
-          });
+          return ephemeralReply(
+            `Nerozumím datu "${!start ? startRaw : endRaw}". Použij formát den.měsíc, např. 2.5. Klepni na tlačítko a zkus to znovu.`,
+          );
         }
 
         if (!inMonthDayRange(start.iso, SEASON_START_RANGE) || !inMonthDayRange(end.iso, SEASON_END_RANGE)) {
-          return json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            data: {
-              content: `Datum mimo očekávaný rozsah (začátek ${SEASON_START_RANGE[0]}–${SEASON_START_RANGE[1]}, konec ${SEASON_END_RANGE[0]}–${SEASON_END_RANGE[1]}) — zkontroluj překlep. Klepni na tlačítko a zkus to znovu.`,
-              flags: EPHEMERAL,
-            },
-          });
+          return ephemeralReply(
+            `Datum mimo očekávaný rozsah (začátek ${SEASON_START_RANGE[0]}–${SEASON_START_RANGE[1]}, konec ${SEASON_END_RANGE[0]}–${SEASON_END_RANGE[1]}) — zkontroluj překlep. Klepni na tlačítko a zkus to znovu.`,
+          );
         }
 
         if (start.iso >= end.iso) {
-          return json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            data: {
-              content: `Začátek sezóny musí být před koncem. Klepni na tlačítko a zkus to znovu.`,
-              flags: EPHEMERAL,
-            },
-          });
+          return ephemeralReply(`Začátek sezóny musí být před koncem. Klepni na tlačítko a zkus to znovu.`);
         }
 
         await saveSeasonConfig(env.DATABASE_URL, start.iso, end.iso);
@@ -225,26 +209,14 @@ export default {
         if (soldRaw !== "") {
           const parsed = Number(soldRaw);
           if (!Number.isInteger(parsed) || parsed < 0) {
-            return json({
-              type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-              data: {
-                content: `"${soldRaw}" není platné celé číslo. Klepni na ADD NOTE a zkus to znovu.`,
-                flags: EPHEMERAL,
-              },
-            });
+            return ephemeralReply(`"${soldRaw}" není platné celé číslo. Klepni na ADD NOTE a zkus to znovu.`);
           }
           soldProduct = parsed;
         }
 
         const saved = await saveNote(env.DATABASE_URL, isoDate, poznamka, soldProduct);
         if (!saved) {
-          return json({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            data: {
-              content: "Nejdřív klepni na busyness tlačítko pro tento den, pak přidej poznámku.",
-              flags: EPHEMERAL,
-            },
-          });
+          return ephemeralReply("Nejdřív klepni na busyness tlačítko pro tento den, pak přidej poznámku.");
         }
         return json({
           type: InteractionResponseType.UPDATE_MESSAGE,
@@ -262,6 +234,13 @@ export default {
 function json(data: unknown): Response {
   return new Response(JSON.stringify(data), {
     headers: { "Content-Type": "application/json" },
+  });
+}
+
+function ephemeralReply(content: string): Response {
+  return json({
+    type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { content, flags: EPHEMERAL },
   });
 }
 

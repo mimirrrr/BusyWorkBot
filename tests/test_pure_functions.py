@@ -15,6 +15,7 @@ import datetime as dt
 import completeness_sweep
 import forecast
 import log_message
+import report_html
 
 
 # ---------------------------------------------------------------------------
@@ -104,11 +105,12 @@ def test_last_weekend_agrees_between_forecast_and_log_message():
         assert forecast.last_weekend(today) == log_message.last_weekend(today)
 
 
-def test_czech_day_matches_across_all_three_modules():
+def test_czech_day_matches_across_all_modules():
     saturday = dt.date(2026, 8, 22)
     assert forecast.czech_day(saturday) == "Sobota"
     assert log_message.czech_day(saturday) == "Sobota"
     assert completeness_sweep.czech_day(saturday) == "Sobota"
+    assert report_html.czech_day(saturday) == "Sobota"
 
 
 # ---------------------------------------------------------------------------
@@ -222,16 +224,6 @@ def test_comparison_line_match_vs_mismatch():
     assert "✅" in forecast.comparison_line(match)
     assert "❌" in forecast.comparison_line(mismatch)
 
-
-# ---------------------------------------------------------------------------
-# forecast.py — embed_color (parked for phase 3, still pure)
-# ---------------------------------------------------------------------------
-
-def test_embed_color_thresholds():
-    assert forecast.embed_color([{"max_rain_prob": 10}]) == 0x2ECC71  # green
-    assert forecast.embed_color([{"max_rain_prob": 45}]) == 0xF1C40F  # yellow
-    assert forecast.embed_color([{"max_rain_prob": 75}]) == 0xE74C3C  # red
-    assert forecast.embed_color([]) == 0x2ECC71  # no fields -> default green
 
 
 # ---------------------------------------------------------------------------

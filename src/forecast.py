@@ -9,16 +9,11 @@ import sys
 import datetime as dt
 from zoneinfo import ZoneInfo
 
+from common import czech_day, load_dotenv, env, text, discord_dm, is_in_season
 from retry import connect_with_retry, request_with_retry
 
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
-DISCORD_API = "https://discord.com/api/v10"
-
-# Message flag that switches the payload to Components V2, needed for the
-# divider line between Saturday and Sunday — classic embeds can't put
-# anything between fields, only Components V2's Separator can.
-IS_COMPONENTS_V2 = 1 << 15
 
 # Weather code groups (WMO codes used by Open-Meteo)
 WEATHER_CODES = {
@@ -35,10 +30,6 @@ WEATHER_CODES = {
     85: "sněhové přeháňky 🌨️", 86: "sněhové přeháňky 🌨️",
     95: "bouřky ⛈️", 96: "bouřky ⛈️", 99: "bouřky ⛈️",
 }
-
-# Python's %A depends on system locale (not reliably set on GitHub's runners),
-# so day names are mapped by hand instead.
-CZECH_DAYS = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"]
 
 # Rule engine v1 tiers, best (busiest) to worst — order matters, predict_verdict
 # indexes into this. Keys match BUSYNESS in src/log_message.py.
@@ -70,29 +61,6 @@ def predict_verdict(max_rain_prob: float, temp_max: float) -> str:
     if temp_max >= 34 or temp_max < 17:
         idx = min(idx + 1, len(TIERS) - 1)
     return TIERS[idx]
-
-
-def czech_day(day: dt.date) -> str:
-    return CZECH_DAYS[day.weekday()]
-
-
-def load_dotenv(path: str = ".env") -> None:
-    """Minimal .env loader for local runs. Real secrets live in GitHub Actions."""
-    if not os.path.exists(path):
-        return
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip())
-
-
-def env(name: str, default: str | None = None) -> str:
-    value = os.environ.get(name, default)
-    if value is None:
-        sys.exit(f"Missing required environment variable: {name}")
-    return value
 
 
 def scheduled_weekday(schedule_cron: str) -> int | None:
@@ -263,55 +231,6 @@ def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) ->
         "teplota_max": round(temp_max),
         "wind_speed": round(wind),
     }
-
-
-def embed_color(fields: list[dict]) -> int:
-    """Pick a left-border color from the worst rain chance across the weekend.
-
-    Parked for phase 3 — v1 uses a flat blue (see main()) since the
-    red/yellow/green scheme looked noisy before real verdict rules exist.
-    """
-    worst = max((f["max_rain_prob"] for f in fields), default=0)
-    if worst >= 60:
-        return 0xE74C3C  # red — likely wet
-    if worst >= 30:
-        return 0xF1C40F  # yellow — mixed
-    return 0x2ECC71      # green — looking dry
-
-
-def text(content: str) -> dict:
-    return {"type": 10, "content": content}
-
-
-def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
-    headers = {"Authorization": f"Bot {token}"}
-    # 1. open (or reuse) the DM channel with me
-    r = request_with_retry(
-        "POST", f"{DISCORD_API}/users/@me/channels",
-        headers=headers, json={"recipient_id": user_id}, timeout=30,
-    )
-    channel_id = r.json()["id"]
-    # 2. send the message as Components V2 (no "embeds" alongside it)
-    request_with_retry(
-        "POST", f"{DISCORD_API}/channels/{channel_id}/messages",
-        headers=headers,
-        json={"flags": IS_COMPONENTS_V2, "components": components},
-        timeout=30,
-    )
-
-
-def is_in_season(database_url: str, today: dt.date) -> bool:
-    """Fails OPEN: True (keep running) if season_config has no row yet, so
-    nothing silently breaks before the season has ever been configured.
-    """
-    with connect_with_retry(database_url, connect_timeout=10) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT season_start, season_end FROM season_config WHERE id = 1")
-            row = cur.fetchone()
-    if row is None:
-        return True
-    season_start, season_end = row
-    return season_start <= today <= season_end
 
 
 def store_predictions(database_url: str, predikce_den: dt.date, days: list[dict]) -> None:

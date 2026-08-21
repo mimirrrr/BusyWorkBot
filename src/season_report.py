@@ -30,6 +30,7 @@ import report_charts
 import report_html
 import report_narrative
 import report_stats
+from common import load_dotenv, env
 from retry import connect_with_retry, request_with_retry
 
 DISCORD_API = "https://discord.com/api/v10"
@@ -72,25 +73,6 @@ LEFT JOIN weathers pw           ON pw.id_w = lp.pocasi_id
 LEFT JOIN visited pv            ON pv.id_v = lp.predikce_navstevnost_id
 ORDER BY wd.den;
 """
-
-
-def load_dotenv(path: str = ".env") -> None:
-    """Minimal .env loader for local runs. Real secrets live in GitHub Actions."""
-    if not os.path.exists(path):
-        return
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip())
-
-
-def env(name: str, default: str | None = None) -> str:
-    value = os.environ.get(name, default)
-    if value is None:
-        sys.exit(f"Missing required environment variable: {name}")
-    return value
 
 
 def fetch_season_config(database_url: str) -> dict | None:

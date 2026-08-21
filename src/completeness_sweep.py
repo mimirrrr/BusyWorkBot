@@ -8,16 +8,13 @@ Sends nothing when there's nothing missing. Unlike the other scripts,
 meaningful preview without querying what's actually missing.
 """
 
-import os
 import sys
 import datetime as dt
 from zoneinfo import ZoneInfo
 
+from common import czech_day, load_dotenv, env, text, is_in_season, discord_dm
 from forecast import fetch_archive, summarize_actual_day
-from retry import connect_with_retry, request_with_retry
-
-DISCORD_API = "https://discord.com/api/v10"
-IS_COMPONENTS_V2 = 1 << 15
+from retry import connect_with_retry
 
 # Open-Meteo's archive/reanalysis dataset is published with a lag; days more
 # recent than this are skipped rather than requested, and pick up
@@ -35,8 +32,6 @@ BUSYNESS = [
     ("slammed", "Slammed", 3),
 ]
 
-CZECH_DAYS = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"]
-
 # Discord's 40-component cap counts recursively, not just top-level items:
 # each shown day costs 9 (header text=1, busyness row=1 wrapper+5 buttons,
 # note row=1 wrapper+1 button), plus a divider between every pair of shown
@@ -44,33 +39,6 @@ CZECH_DAYS = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota",
 # "+N more" line: worst case 10*N + 1 <= 40, so N=3 is the most that's
 # always safe with margin to spare (N=4 hits exactly 41 with overflow).
 MAX_DAYS_PER_MESSAGE = 3
-
-
-def czech_day(day: dt.date) -> str:
-    return CZECH_DAYS[day.weekday()]
-
-
-def load_dotenv(path: str = ".env") -> None:
-    """Minimal .env loader for local runs. Real secrets live in GitHub Actions."""
-    if not os.path.exists(path):
-        return
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip())
-
-
-def env(name: str, default: str | None = None) -> str:
-    value = os.environ.get(name, default)
-    if value is None:
-        sys.exit(f"Missing required environment variable: {name}")
-    return value
-
-
-def text(content: str) -> dict:
-    return {"type": 10, "content": content}
 
 
 def czech_day_count(n: int) -> str:
@@ -251,35 +219,6 @@ def fill_missing_actual_weather(
         print(f"Completeness sweep: filled actual weather for {filled}/{len(missing)} day(s).")
     except Exception as e:
         print(f"Completeness sweep: actual-weather backfill failed, skipping this run: {e}")
-
-
-def is_in_season(database_url: str, today: dt.date) -> bool:
-    """Fails OPEN: True (keep running) if season_config has no row yet, so
-    nothing silently breaks before the season has ever been configured.
-    """
-    with connect_with_retry(database_url, connect_timeout=10) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT season_start, season_end FROM season_config WHERE id = 1")
-            row = cur.fetchone()
-    if row is None:
-        return True
-    season_start, season_end = row
-    return season_start <= today <= season_end
-
-
-def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
-    headers = {"Authorization": f"Bot {token}"}
-    r = request_with_retry(
-        "POST", f"{DISCORD_API}/users/@me/channels",
-        headers=headers, json={"recipient_id": user_id}, timeout=30,
-    )
-    channel_id = r.json()["id"]
-    request_with_retry(
-        "POST", f"{DISCORD_API}/channels/{channel_id}/messages",
-        headers=headers,
-        json={"flags": IS_COMPONENTS_V2, "components": components},
-        timeout=30,
-    )
 
 
 def main() -> None:

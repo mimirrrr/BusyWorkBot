@@ -9,51 +9,9 @@ Every other scheduled script reads that row to skip itself outside the
 season. Doesn't touch the DB itself — this script only sends the prompt.
 """
 
-import os
 import sys
 
-from retry import request_with_retry
-
-DISCORD_API = "https://discord.com/api/v10"
-IS_COMPONENTS_V2 = 1 << 15
-
-
-def load_dotenv(path: str = ".env") -> None:
-    """Minimal .env loader for local runs. Real secrets live in GitHub Actions."""
-    if not os.path.exists(path):
-        return
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip())
-
-
-def env(name: str, default: str | None = None) -> str:
-    value = os.environ.get(name, default)
-    if value is None:
-        sys.exit(f"Missing required environment variable: {name}")
-    return value
-
-
-def text(content: str) -> dict:
-    return {"type": 10, "content": content}
-
-
-def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
-    headers = {"Authorization": f"Bot {token}"}
-    r = request_with_retry(
-        "POST", f"{DISCORD_API}/users/@me/channels",
-        headers=headers, json={"recipient_id": user_id}, timeout=30,
-    )
-    channel_id = r.json()["id"]
-    request_with_retry(
-        "POST", f"{DISCORD_API}/channels/{channel_id}/messages",
-        headers=headers,
-        json={"flags": IS_COMPONENTS_V2, "components": components},
-        timeout=30,
-    )
+from common import load_dotenv, env, text, discord_dm
 
 
 def main() -> None:
