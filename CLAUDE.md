@@ -98,14 +98,13 @@ The work season (outdoor gastro, roughly May–October) is shorter than the cale
 - **`season_config`** (see Database above) gates the three recurring scripts. `src/season_reminder.py` fires once a year and DMs a button that opens a modal to set it — see the `custom_id` note above.
 - **`.github/workflows/keepalive.yml`** makes an empty commit to `main` on the 1st of every month, year-round. This exists because GitHub auto-disables a repo's scheduled workflows after 60 days with no repository activity — and the work season itself (2.5.–4.10., ~5 months) is longer than that window, so without this, GitHub could disable the schedules **mid-season**, not just over winter. Whether a scheduled workflow's own executions count as "activity" for that rule is genuinely unclear from GitHub's docs, so this sidesteps the question with an unambiguous real git push instead of relying on an interpretation.
 
-## In-progress hardening (Phase 4)
+## Hardening (Phase 4)
 
 Full detail/rationale in `docs/PLAN.md` Phase 4; short version here since it touches conventions below:
-- Cron schedules in `.github/workflows/*.yml` are being offset off `:00` — GitHub delays scheduled runs most at the top of the hour.
-- `forecast.py`'s `today.weekday() == 4` branch (decides whether the last-weekend recap gets prepended) needs a guard against a delayed run landing on the wrong weekday.
-- A shared retry-with-backoff helper is being added for transient HTTP failures (timeout/429/5xx) — every `requests.get`/`requests.post` call in `src/` has a `timeout=` but currently zero retries.
-- `psycopg.connect` call sites (four, all `connect_timeout=10`) are getting light retries for transient Neon cold-start blips.
-- The Worker's `season_modal` handler is getting a sanity-range check on the parsed `season_start`/`season_end` — insurance against a fat-fingered date, not a DST fix (the season formula itself never crosses DST by construction).
+- Cron schedules in `.github/workflows/*.yml` fire a few minutes off `:00` — GitHub delays scheduled runs most at the top of the hour.
+- `forecast.yml` fires two separate `THU`/`FRI` schedule entries (not one combined `THU,FRI` cron) so `github.event.schedule` can tell them apart, passed through as `SCHEDULE_CRON`. `forecast.py`'s `is_official_run()`/`scheduled_weekday()` trust that over `today.weekday()` when deciding whether to prepend the last-weekend recap — a delayed run landing on the wrong calendar day (e.g. Friday's job rolling past midnight into Saturday) still gets classified correctly instead of silently mis-branching. Falls back to `today.weekday()` when there's no schedule (`workflow_dispatch`/local/`--dry-run`).
+- `src/retry.py` (`request_with_retry`, `connect_with_retry`) is a shared retry-with-backoff helper for transient failures (timeout/429/5xx for HTTP, `psycopg.OperationalError` for DB connects) — every `requests.get`/`requests.post` and `psycopg.connect` call in `src/` goes through it now. A real 4xx fails immediately; retrying it would never help.
+- The Worker's `season_modal` handler sanity-checks the parsed `season_start`/`season_end` against `SEASON_START_RANGE`/`SEASON_END_RANGE` (Apr 15–May 15 / Sep 15–Oct 15) and rejects a start on/after end — insurance against a fat-fingered date, not a DST fix (the season formula itself never crosses DST by construction).
 
 ## Conventions worth knowing
 
