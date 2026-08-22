@@ -12,7 +12,16 @@ import sys
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-from common import czech_day, load_dotenv, env, text, is_in_season, discord_dm
+from common import (
+    BUSYNESS,
+    czech_day,
+    day_block,
+    discord_dm,
+    env,
+    is_in_season,
+    load_dotenv,
+    text,
+)
 from forecast import fetch_archive, summarize_actual_day
 from retry import connect_with_retry
 
@@ -20,17 +29,6 @@ from retry import connect_with_retry
 # recent than this are skipped rather than requested, and pick up
 # automatically on a later sweep once the data exists.
 ARCHIVE_LAG_DAYS = 5
-
-# (custom_id key, button label, button style) — must match BUSYNESS in
-# src/log_message.py and the `visited` seed order in db/schema.sql, since the
-# Worker maps these keys to a visited_id by name lookup.
-BUSYNESS = [
-    ("dead", "Dead", 4),
-    ("slow", "Slow", 2),
-    ("normal", "Normal", 2),
-    ("busy", "Busy", 1),
-    ("slammed", "Slammed", 3),
-]
 
 # Discord's 40-component cap counts recursively, not just top-level items:
 # each shown day costs 9 (header text=1, busyness row=1 wrapper+5 buttons,
@@ -57,39 +55,6 @@ def czech_more_days(n: int) -> str:
     if 2 <= n <= 4:
         return f"+{n} další dny"
     return f"+{n} dalších dní"
-
-
-def day_block(day: dt.date) -> list[dict]:
-    """Header text + busyness row + note row for one day — identical layout
-    to src/log_message.py's day_block, so the Worker's button handling needs
-    no changes to also serve this message.
-    """
-    return [
-        text(f"**{czech_day(day)} {day.strftime('%d.%m')}**"),
-        {
-            "type": 1,
-            "components": [
-                {
-                    "type": 2,
-                    "style": style,
-                    "label": label,
-                    "custom_id": f"log:{day.isoformat()}:{key}",
-                }
-                for key, label, style in BUSYNESS
-            ],
-        },
-        {
-            "type": 1,
-            "components": [
-                {
-                    "type": 2,
-                    "style": 2,
-                    "label": "ADD NOTE",
-                    "custom_id": f"note:{day.isoformat()}",
-                },
-            ],
-        },
-    ]
 
 
 def fetch_missing_days(database_url: str, today: dt.date) -> list[dt.date]:
@@ -163,36 +128,41 @@ def store_actual_weather(database_url: str, days: list[dict]) -> None:
     forecast.py's store_predictions but keyed on den alone — only one
     "actual" ever exists per day, unlike weather_prediction's Thu/Fri pair.
     """
+    valid_days = [
+        {
+            "den": d["day"],
+            "weather_label": d["weather_label"],
+            "srazky": d["srazky"],
+            "teplota_min": d["teplota_min"],
+            "teplota_max": d["teplota_max"],
+            "wind_speed": d["wind_speed"],
+        }
+        for d in days
+        if d.get("has_data")
+    ]
+    if not valid_days:
+        return
+
     with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
-            for d in days:
-                if not d["has_data"]:
-                    continue
-                cur.execute(
-                    """
-                    INSERT INTO weather_actual
-                        (den, pocasi_id, srazky, teplota_min, teplota_max, wind_speed)
-                    VALUES (
-                        %(den)s,
-                        (SELECT id_w FROM weathers WHERE name_w = %(weather_label)s),
-                        %(srazky)s, %(teplota_min)s, %(teplota_max)s, %(wind_speed)s
-                    )
-                    ON CONFLICT (den) DO UPDATE SET
-                        pocasi_id = EXCLUDED.pocasi_id,
-                        srazky = EXCLUDED.srazky,
-                        teplota_min = EXCLUDED.teplota_min,
-                        teplota_max = EXCLUDED.teplota_max,
-                        wind_speed = EXCLUDED.wind_speed
-                    """,
-                    {
-                        "den": d["day"],
-                        "weather_label": d["weather_label"],
-                        "srazky": d["srazky"],
-                        "teplota_min": d["teplota_min"],
-                        "teplota_max": d["teplota_max"],
-                        "wind_speed": d["wind_speed"],
-                    },
+            cur.executemany(
+                """
+                INSERT INTO weather_actual
+                    (den, pocasi_id, srazky, teplota_min, teplota_max, wind_speed)
+                VALUES (
+                    %(den)s,
+                    (SELECT id_w FROM weathers WHERE name_w = %(weather_label)s),
+                    %(srazky)s, %(teplota_min)s, %(teplota_max)s, %(wind_speed)s
                 )
+                ON CONFLICT (den) DO UPDATE SET
+                    pocasi_id = EXCLUDED.pocasi_id,
+                    srazky = EXCLUDED.srazky,
+                    teplota_min = EXCLUDED.teplota_min,
+                    teplota_max = EXCLUDED.teplota_max,
+                    wind_speed = EXCLUDED.wind_speed
+                """,
+                valid_days,
+            )
 
 
 def fill_missing_actual_weather(

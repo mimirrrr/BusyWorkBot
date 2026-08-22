@@ -256,12 +256,10 @@ function ephemeralReply(content: string): Response {
 async function logBusyness(databaseUrl: string, isoDate: string, key: string): Promise<void> {
   const sql = neon(databaseUrl);
   const visitedName = BUSYNESS[key].visitedName;
-  const rows = await sql`SELECT id_v FROM visited WHERE name_v = ${visitedName}`;
-  const visitedId = rows[0].id_v;
   const source = sourceForDate(isoDate);
   await sql`
     INSERT INTO user_input (den, visited_id, source)
-    VALUES (${isoDate}, ${visitedId}, ${source})
+    VALUES (${isoDate}, (SELECT id_v FROM visited WHERE name_v = ${visitedName}), ${source})
     ON CONFLICT (den) DO UPDATE SET visited_id = EXCLUDED.visited_id, logged_at = now()
   `;
 }

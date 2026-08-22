@@ -203,3 +203,23 @@ def test_accuracy_by_rule_component_skips_rows_with_no_component_data():
     result = report_stats.accuracy_by_rule_component([{"actual_verdict": None}])
     assert result["temp_demotion_triggered_n"] == 0
     assert result["rain_tier_only"] == {"n": 0, "correct": 0, "accuracy": None}
+
+
+# ---------------------------------------------------------------------------
+# report_charts edge cases (missing split subsets, empty scatter)
+# ---------------------------------------------------------------------------
+
+def test_render_accuracy_bar_handles_missing_split_groups():
+    import report_charts
+    stats = {
+        "overall": {"n": 5, "correct": 4, "accuracy": 0.8},
+        "by_backfill": {},  # missing "False" and "True" keys
+    }
+    b64 = report_charts.render_accuracy_bar(stats)
+    assert isinstance(b64, str) and len(b64) > 0
+
+
+def test_render_scatter_handles_empty_points():
+    import report_charts
+    b64 = report_charts.render_scatter([], "Title", "X", "Y")
+    assert isinstance(b64, str) and len(b64) > 0

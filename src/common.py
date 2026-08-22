@@ -22,8 +22,28 @@ IS_COMPONENTS_V2 = 1 << 15
 CZECH_DAYS = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"]
 
 
+# (custom_id key, button label, button style) in busyness order — must match
+# the order `visited` was seeded in db/schema.sql (velmi slabe..naval), since
+# the Worker maps this position to a visited_id.
+# Styles: 4 Danger, 2 Secondary, 1 Primary, 3 Success.
+BUSYNESS = [
+    ("dead", "Dead", 4),
+    ("slow", "Slow", 2),
+    ("normal", "Normal", 2),
+    ("busy", "Busy", 1),
+    ("slammed", "Slammed", 3),
+]
+
+
 def czech_day(day: dt.date) -> str:
     return CZECH_DAYS[day.weekday()]
+
+
+def last_weekend(today: dt.date) -> tuple[dt.date, dt.date]:
+    """Most recently completed Saturday and Sunday."""
+    days_since_sunday = (today.weekday() - 6) % 7
+    sunday = today - dt.timedelta(days=days_since_sunday)
+    return sunday - dt.timedelta(days=1), sunday
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -49,6 +69,40 @@ def text(content: str) -> dict:
     return {"type": 10, "content": content}
 
 
+def day_block(day: dt.date) -> list[dict]:
+    """Header text + busyness row + note row for one day.
+
+    custom_id carries the actual date (not "sat"/"sun") so the Worker never
+    has to guess which weekend a stale message button belongs to.
+    """
+    return [
+        text(f"**{czech_day(day)} {day.strftime('%d.%m')}**"),
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2,
+                    "style": style,
+                    "label": label,
+                    "custom_id": f"log:{day.isoformat()}:{key}",
+                }
+                for key, label, style in BUSYNESS
+            ],
+        },
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2,
+                    "style": 2,
+                    "label": "ADD NOTE",
+                    "custom_id": f"note:{day.isoformat()}",
+                },
+            ],
+        },
+    ]
+
+
 def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     headers = {"Authorization": f"Bot {token}"}
     # 1. open (or reuse) the DM channel with me
@@ -66,15 +120,50 @@ def discord_dm(token: str, user_id: str, components: list[dict]) -> None:
     )
 
 
+def discord_dm_with_file(
+    token: str, user_id: str, components: list[dict],
+    filename: str, file_bytes: bytes, content_type: str,
+) -> None:
+    """Multipart variant of discord_dm() with file attachment support."""
+    import json
+    headers = {"Authorization": f"Bot {token}"}
+    r = request_with_retry(
+        "POST", f"{DISCORD_API}/users/@me/channels",
+        headers=headers, json={"recipient_id": user_id}, timeout=30,
+    )
+    channel_id = r.json()["id"]
+    payload = {
+        "flags": IS_COMPONENTS_V2,
+        "components": components + [{"type": 13, "file": {"url": f"attachment://{filename}"}}],
+        "attachments": [{"id": 0, "filename": filename}],
+    }
+    request_with_retry(
+        "POST", f"{DISCORD_API}/channels/{channel_id}/messages",
+        headers=headers,
+        data={"payload_json": json.dumps(payload)},
+        files={"files[0]": (filename, file_bytes, content_type)},
+        timeout=60,
+    )
+
+
+def fetch_season_config(database_url: str) -> dict | None:
+    with connect_with_retry(database_url, connect_timeout=10) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT season_start, season_end, report_sent_at, updated_at "
+                "FROM season_config WHERE id = 1"
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return {"season_start": row[0], "season_end": row[1], "report_sent_at": row[2], "updated_at": row[3]}
+
+
 def is_in_season(database_url: str, today: dt.date) -> bool:
     """Fails OPEN: True (keep running) if season_config has no row yet, so
     nothing silently breaks before the season has ever been configured.
     """
-    with connect_with_retry(database_url, connect_timeout=10) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT season_start, season_end FROM season_config WHERE id = 1")
-            row = cur.fetchone()
-    if row is None:
+    config = fetch_season_config(database_url)
+    if config is None:
         return True
-    season_start, season_end = row
-    return season_start <= today <= season_end
+    return config["season_start"] <= today <= config["season_end"]

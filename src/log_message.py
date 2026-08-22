@@ -10,61 +10,17 @@ import sys
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-from common import czech_day, load_dotenv, env, text, is_in_season, discord_dm
-
-# (custom_id key, button label, button style) in busyness order — must match
-# the order `visited` was seeded in db/schema.sql (velmi slabe..naval), since
-# the Worker maps this position to a visited_id.
-# Styles: 4 Danger, 2 Secondary, 1 Primary, 3 Success.
-BUSYNESS = [
-    ("dead", "Dead", 4),
-    ("slow", "Slow", 2),
-    ("normal", "Normal", 2),
-    ("busy", "Busy", 1),
-    ("slammed", "Slammed", 3),
-]
-
-
-def last_weekend(today: dt.date) -> tuple[dt.date, dt.date]:
-    """Most recently completed Saturday and Sunday (the weekend that just ended)."""
-    days_since_sunday = (today.weekday() - 6) % 7
-    sunday = today - dt.timedelta(days=days_since_sunday)
-    saturday = sunday - dt.timedelta(days=1)
-    return saturday, sunday
-
-
-def day_block(day: dt.date) -> list[dict]:
-    """Header text + busyness row + note row for one day.
-
-    custom_id carries the actual date (not "sat"/"sun") so the Worker never
-    has to guess which weekend a stale message button belongs to.
-    """
-    return [
-        text(f"**{czech_day(day)} {day.strftime('%d.%m')}**"),
-        {
-            "type": 1,
-            "components": [
-                {
-                    "type": 2,
-                    "style": style,
-                    "label": label,
-                    "custom_id": f"log:{day.isoformat()}:{key}",
-                }
-                for key, label, style in BUSYNESS
-            ],
-        },
-        {
-            "type": 1,
-            "components": [
-                {
-                    "type": 2,
-                    "style": 2,
-                    "label": "ADD NOTE",
-                    "custom_id": f"note:{day.isoformat()}",
-                },
-            ],
-        },
-    ]
+from common import (
+    BUSYNESS,
+    czech_day,
+    day_block,
+    discord_dm,
+    env,
+    is_in_season,
+    last_weekend,
+    load_dotenv,
+    text,
+)
 
 
 def main() -> None:

@@ -13,6 +13,7 @@ not the logic these tests cover.
 import datetime as dt
 
 import completeness_sweep
+import common
 import forecast
 import log_message
 import report_html
@@ -253,8 +254,10 @@ def test_czech_more_days_declension():
 def test_day_block_identical_between_log_message_and_completeness_sweep():
     day = dt.date(2026, 8, 22)
     assert log_message.day_block(day) == completeness_sweep.day_block(day)
+    assert common.day_block(day) == log_message.day_block(day)
 
 
 def test_busyness_keys_and_order_match_between_modules():
     assert [key for key, _, _ in log_message.BUSYNESS] == \
-           [key for key, _, _ in completeness_sweep.BUSYNESS]
+           [key for key, _, _ in completeness_sweep.BUSYNESS] == \
+           [key for key, _, _ in common.BUSYNESS]

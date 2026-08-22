@@ -33,8 +33,12 @@ def render_accuracy_bar(stats: dict) -> str:
     """Overall vs. live-only vs. backfill-only accuracy, side by side."""
     by_backfill = stats["by_backfill"]
     labels = ["Celkem", "Live", "Backfill"]
-    groups = [stats["overall"], by_backfill.get("False", {"accuracy": None}),
-              by_backfill.get("True", {"accuracy": None})]
+    empty_group = {"n": 0, "correct": 0, "accuracy": None}
+    groups = [
+        stats["overall"],
+        by_backfill.get("False", empty_group),
+        by_backfill.get("True", empty_group),
+    ]
     values = [g["accuracy"] * 100 if g["accuracy"] is not None else 0 for g in groups]
     ns = [g["n"] for g in groups]
 
@@ -75,10 +79,12 @@ def render_confusion_matrix(stats: dict) -> str:
 
 def render_scatter(points: list[dict], title: str, xlabel: str, ylabel: str) -> str:
     fig, ax = plt.subplots(figsize=(5, 4))
+    has_points = False
     for is_backfill, marker, edge_label in ((False, "o", "live"), (True, "^", "backfill")):
         subset = [p for p in points if p.get("is_backfill") == is_backfill]
         if not subset:
             continue
+        has_points = True
         ax.scatter(
             [p["x"] for p in subset], [p["y"] for p in subset],
             c=[VERDICT_COLORS.get(p["verdict"], "#7F8C8D") for p in subset],
@@ -88,7 +94,8 @@ def render_scatter(points: list[dict], title: str, xlabel: str, ylabel: str) -> 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
-    ax.legend(title="zdroj", loc="best")
+    if has_points:
+        ax.legend(title="zdroj", loc="best")
     fig.tight_layout()
     return _fig_to_base64(fig)
 

@@ -48,17 +48,7 @@ def rain_tier_only_verdict(max_rain_prob: float) -> str:
     accuracy_by_rule_component can tell whether the temp demotion helps or
     hurts.
     """
-    if max_rain_prob <= 10:
-        idx = 0
-    elif max_rain_prob <= 30:
-        idx = 1
-    elif max_rain_prob <= 50:
-        idx = 2
-    elif max_rain_prob <= 80:
-        idx = 3
-    else:
-        idx = 4
-    return forecast.TIERS[idx]
+    return forecast.rain_tier_only_verdict(max_rain_prob)
 
 
 def to_verdict_key(visited_name: str | None) -> str | None:

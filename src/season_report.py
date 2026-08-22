@@ -30,11 +30,16 @@ import report_charts
 import report_html
 import report_narrative
 import report_stats
-from common import load_dotenv, env
+from common import (
+    DISCORD_API,
+    IS_COMPONENTS_V2,
+    discord_dm_with_file,
+    env,
+    fetch_season_config,
+    load_dotenv,
+    text,
+)
 from retry import connect_with_retry, request_with_retry
-
-DISCORD_API = "https://discord.com/api/v10"
-IS_COMPONENTS_V2 = 1 << 15
 
 SEASON_DATASET_QUERY = """
 WITH season AS (
@@ -75,19 +80,6 @@ ORDER BY wd.den;
 """
 
 
-def fetch_season_config(database_url: str) -> dict | None:
-    with connect_with_retry(database_url, connect_timeout=10) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT season_start, season_end, report_sent_at, updated_at "
-                "FROM season_config WHERE id = 1"
-            )
-            row = cur.fetchone()
-    if row is None:
-        return None
-    return {"season_start": row[0], "season_end": row[1], "report_sent_at": row[2], "updated_at": row[3]}
-
-
 def already_sent(config: dict) -> bool:
     """Not a bare null-check: >= updated_at self-invalidates once next
     year's season_config gets overwritten (the Worker's season_modal
@@ -112,42 +104,6 @@ def mark_report_sent(database_url: str) -> None:
     with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE season_config SET report_sent_at = now() WHERE id = 1")
-
-
-def discord_dm_with_file(
-    token: str, user_id: str, components: list[dict],
-    filename: str, file_bytes: bytes, content_type: str,
-) -> None:
-    """Multipart variant of the discord_dm() every other script uses --
-    every existing discord_dm call is JSON-only Components V2 with no
-    attachment support, and Discord requires the components payload as a
-    payload_json form field (not a JSON body) once a file part is involved.
-
-    A bare multipart upload is NOT enough once the Components V2 flag is
-    set (confirmed by a real smoke test -- Discord returns 200 and the
-    message sends, but silently drops the file): the payload also needs an
-    explicit `attachments` entry mapping the upload to its files[N] index,
-    and a File component (type 13, attachment://<filename>) so it actually
-    renders in the layout instead of just being accepted and discarded.
-    """
-    headers = {"Authorization": f"Bot {token}"}
-    r = request_with_retry(
-        "POST", f"{DISCORD_API}/users/@me/channels",
-        headers=headers, json={"recipient_id": user_id}, timeout=30,
-    )
-    channel_id = r.json()["id"]
-    payload = {
-        "flags": IS_COMPONENTS_V2,
-        "components": components + [{"type": 13, "file": {"url": f"attachment://{filename}"}}],
-        "attachments": [{"id": 0, "filename": filename}],
-    }
-    request_with_retry(
-        "POST", f"{DISCORD_API}/channels/{channel_id}/messages",
-        headers=headers,
-        data={"payload_json": json.dumps(payload)},
-        files={"files[0]": (filename, file_bytes, content_type)},
-        timeout=60,
-    )
 
 
 def build_completeness_nag_components(missing: list[dt.date]) -> list[dict]:

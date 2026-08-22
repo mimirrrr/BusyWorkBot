@@ -9,7 +9,15 @@ import sys
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-from common import czech_day, load_dotenv, env, text, discord_dm, is_in_season
+from common import (
+    czech_day,
+    discord_dm,
+    env,
+    is_in_season,
+    last_weekend,
+    load_dotenv,
+    text,
+)
 from retry import connect_with_retry, request_with_retry
 
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
@@ -42,12 +50,8 @@ VISITED_NAMES = {"dead": "velmi slabe", "slow": "slabe", "normal": "stredni",
 REVERSE_VISITED_NAMES = {v: k for k, v in VISITED_NAMES.items()}
 
 
-def predict_verdict(max_rain_prob: float, temp_max: float) -> str:
-    """Rule engine v1: rain probability sets the base tier (dominant signal),
-    extreme temperature demotes one tier (too hot -> pool instead; too cold ->
-    early/late season). Temp is orientation-only, per docs/PLAN.md — it never
-    promotes, only demotes at the extremes.
-    """
+def rain_tier_only_verdict(max_rain_prob: float) -> str:
+    """Rain probability alone determines the base tier (dominant signal)."""
     if max_rain_prob <= 10:
         idx = 0
     elif max_rain_prob <= 30:
@@ -58,6 +62,17 @@ def predict_verdict(max_rain_prob: float, temp_max: float) -> str:
         idx = 3
     else:
         idx = 4
+    return TIERS[idx]
+
+
+def predict_verdict(max_rain_prob: float, temp_max: float) -> str:
+    """Rule engine v1: rain probability sets the base tier (dominant signal),
+    extreme temperature demotes one tier (too hot -> pool instead; too cold ->
+    early/late season). Temp is orientation-only, per docs/PLAN.md — it never
+    promotes, only demotes at the extremes.
+    """
+    base = rain_tier_only_verdict(max_rain_prob)
+    idx = TIERS.index(base)
     if temp_max >= 34 or temp_max < 17:
         idx = min(idx + 1, len(TIERS) - 1)
     return TIERS[idx]
@@ -101,13 +116,6 @@ def next_weekend(today: dt.date) -> tuple[dt.date, dt.date]:
     return saturday, saturday + dt.timedelta(days=1)
 
 
-def last_weekend(today: dt.date) -> tuple[dt.date, dt.date]:
-    """Most recently completed Saturday and Sunday (mirrors src/log_message.py)."""
-    days_since_sunday = (today.weekday() - 6) % 7
-    sunday = today - dt.timedelta(days=days_since_sunday)
-    return sunday - dt.timedelta(days=1), sunday
-
-
 def fetch_forecast(lat: float, lon: float, start: dt.date, end: dt.date, tz: str) -> dict:
     params = {
         "latitude": lat,
@@ -142,19 +150,14 @@ def fetch_archive(lat: float, lon: float, start: dt.date, end: dt.date, tz: str)
     return r.json()
 
 
-def summarize_actual_day(hourly: dict, day: dt.date, work_start: int, work_end: int) -> dict:
-    """Like summarize_day, but for actual (archive) weather: no rain
-    probability and no verdict, since neither concept applies to something
-    that already happened. Just the dominant condition and the totals/
-    extremes over working hours, for weather_actual.
-    """
-    idx = [
+def _extract_working_hours_indices(hourly: dict, day: dt.date, work_start: int, work_end: int) -> list[int]:
+    return [
         i for i, t in enumerate(hourly["time"])
         if t.startswith(day.isoformat()) and work_start <= int(t[11:13]) < work_end
     ]
-    if not idx:
-        return {"day": day, "has_data": False}
 
+
+def _aggregate_working_hours_weather(hourly: dict, idx: list[int]) -> dict:
     temps = [hourly["temperature_2m"][i] for i in idx]
     rain = sum(hourly["precipitation"][i] or 0 for i in idx)
     wind = max(hourly["wind_speed_10m"][i] for i in idx)
@@ -162,15 +165,34 @@ def summarize_actual_day(hourly: dict, day: dt.date, work_start: int, work_end: 
     dominant = max(set(codes), key=codes.count)
     sky = WEATHER_CODES.get(dominant, f"code {dominant}")
     weather_label = sky.rsplit(" ", 1)[0]
+    return {
+        "temps": temps,
+        "rain": rain,
+        "wind": wind,
+        "sky": sky,
+        "weather_label": weather_label,
+    }
 
+
+def summarize_actual_day(hourly: dict, day: dt.date, work_start: int, work_end: int) -> dict:
+    """Like summarize_day, but for actual (archive) weather: no rain
+    probability and no verdict, since neither concept applies to something
+    that already happened. Just the dominant condition and the totals/
+    extremes over working hours, for weather_actual.
+    """
+    idx = _extract_working_hours_indices(hourly, day, work_start, work_end)
+    if not idx:
+        return {"day": day, "has_data": False}
+
+    agg = _aggregate_working_hours_weather(hourly, idx)
     return {
         "day": day,
         "has_data": True,
-        "weather_label": weather_label,
-        "srazky": round(rain, 1),
-        "teplota_min": round(min(temps)),
-        "teplota_max": round(max(temps)),
-        "wind_speed": round(wind),
+        "weather_label": agg["weather_label"],
+        "srazky": round(agg["rain"], 1),
+        "teplota_min": round(min(agg["temps"])),
+        "teplota_max": round(max(agg["temps"])),
+        "wind_speed": round(agg["wind"]),
     }
 
 
@@ -182,10 +204,7 @@ def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) ->
     caller must skip storing a prediction in that case (nothing to compute it
     from).
     """
-    idx = [
-        i for i, t in enumerate(hourly["time"])
-        if t.startswith(day.isoformat()) and work_start <= int(t[11:13]) < work_end
-    ]
+    idx = _extract_working_hours_indices(hourly, day, work_start, work_end)
     if not idx:
         return {
             "day": day,
@@ -195,26 +214,17 @@ def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) ->
             "has_data": False,
         }
 
-    temps = [hourly["temperature_2m"][i] for i in idx]
+    agg = _aggregate_working_hours_weather(hourly, idx)
     probs = [hourly["precipitation_probability"][i] or 0 for i in idx]
-    rain = sum(hourly["precipitation"][i] or 0 for i in idx)
-    wind = max(hourly["wind_speed_10m"][i] for i in idx)
-    codes = [hourly["weather_code"][i] for i in idx]
-    # dominant = most frequent code in the window
-    dominant = max(set(codes), key=codes.count)
-    sky = WEATHER_CODES.get(dominant, f"code {dominant}")
-    # WEATHER_CODES values are "label emoji" — strip the trailing emoji token
-    # to get the plain label stored in db/schema.sql's weathers table.
-    weather_label = sky.rsplit(" ", 1)[0]
     max_prob = max(probs)
-    temp_min, temp_max = min(temps), max(temps)
+    temp_min, temp_max = min(agg["temps"]), max(agg["temps"])
     verdict = predict_verdict(max_prob, temp_max)
 
     value = (
-        f"{sky}\n"
+        f"{agg['sky']}\n"
         f"🌡️ **{temp_min:.0f}–{temp_max:.0f} °C**\n"
-        f"🌧️ max **{max_prob:.0f}%** šance · {rain:.1f} mm celkem\n"
-        f"💨 rychlost větru do {wind:.0f} km/h\n"
+        f"🌧️ max **{max_prob:.0f}%** šance · {agg['rain']:.1f} mm celkem\n"
+        f"💨 rychlost větru do {agg['wind']:.0f} km/h\n"
         f"➡️ **Verdikt: {VERDICT_LABELS[verdict]}**"
     )
     return {
@@ -224,12 +234,12 @@ def summarize_day(hourly: dict, day: dt.date, work_start: int, work_end: int) ->
         "max_rain_prob": max_prob,
         "has_data": True,
         "verdict": verdict,
-        "weather_label": weather_label,
+        "weather_label": agg["weather_label"],
         "chance_rain": round(max_prob),
-        "srazky": round(rain, 1),
+        "srazky": round(agg["rain"], 1),
         "teplota_min": round(temp_min),
         "teplota_max": round(temp_max),
-        "wind_speed": round(wind),
+        "wind_speed": round(agg["wind"]),
     }
 
 
@@ -238,44 +248,49 @@ def store_predictions(database_url: str, predikce_den: dt.date, days: list[dict]
     (den, predikce_den) so a re-run (e.g. manual workflow_dispatch retry) on
     the same day overwrites rather than erroring.
     """
+    valid_days = [
+        {
+            "den": d["day"],
+            "predikce_den": predikce_den,
+            "weather_label": d["weather_label"],
+            "chance_rain": d["chance_rain"],
+            "srazky": d["srazky"],
+            "teplota_min": d["teplota_min"],
+            "teplota_max": d["teplota_max"],
+            "wind_speed": d["wind_speed"],
+            "visited_name": VISITED_NAMES[d["verdict"]],
+        }
+        for d in days
+        if d.get("has_data")
+    ]
+    if not valid_days:
+        return
+
     with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
-            for d in days:
-                if not d["has_data"]:
-                    continue
-                cur.execute(
-                    """
-                    INSERT INTO weather_prediction
-                        (den, predikce_den, pocasi_id, chance_rain, srazky,
-                         teplota_min, teplota_max, wind_speed, predikce_navstevnost_id)
-                    VALUES (
-                        %(den)s, %(predikce_den)s,
-                        (SELECT id_w FROM weathers WHERE name_w = %(weather_label)s),
-                        %(chance_rain)s, %(srazky)s, %(teplota_min)s, %(teplota_max)s,
-                        %(wind_speed)s,
-                        (SELECT id_v FROM visited WHERE name_v = %(visited_name)s)
-                    )
-                    ON CONFLICT (den, predikce_den) DO UPDATE SET
-                        pocasi_id = EXCLUDED.pocasi_id,
-                        chance_rain = EXCLUDED.chance_rain,
-                        srazky = EXCLUDED.srazky,
-                        teplota_min = EXCLUDED.teplota_min,
-                        teplota_max = EXCLUDED.teplota_max,
-                        wind_speed = EXCLUDED.wind_speed,
-                        predikce_navstevnost_id = EXCLUDED.predikce_navstevnost_id
-                    """,
-                    {
-                        "den": d["day"],
-                        "predikce_den": predikce_den,
-                        "weather_label": d["weather_label"],
-                        "chance_rain": d["chance_rain"],
-                        "srazky": d["srazky"],
-                        "teplota_min": d["teplota_min"],
-                        "teplota_max": d["teplota_max"],
-                        "wind_speed": d["wind_speed"],
-                        "visited_name": VISITED_NAMES[d["verdict"]],
-                    },
+            cur.executemany(
+                """
+                INSERT INTO weather_prediction
+                    (den, predikce_den, pocasi_id, chance_rain, srazky,
+                     teplota_min, teplota_max, wind_speed, predikce_navstevnost_id)
+                VALUES (
+                    %(den)s, %(predikce_den)s,
+                    (SELECT id_w FROM weathers WHERE name_w = %(weather_label)s),
+                    %(chance_rain)s, %(srazky)s, %(teplota_min)s, %(teplota_max)s,
+                    %(wind_speed)s,
+                    (SELECT id_v FROM visited WHERE name_v = %(visited_name)s)
                 )
+                ON CONFLICT (den, predikce_den) DO UPDATE SET
+                    pocasi_id = EXCLUDED.pocasi_id,
+                    chance_rain = EXCLUDED.chance_rain,
+                    srazky = EXCLUDED.srazky,
+                    teplota_min = EXCLUDED.teplota_min,
+                    teplota_max = EXCLUDED.teplota_max,
+                    wind_speed = EXCLUDED.wind_speed,
+                    predikce_navstevnost_id = EXCLUDED.predikce_navstevnost_id
+                """,
+                valid_days,
+            )
 
 
 def fetch_last_weekend_comparison(database_url: str, saturday: dt.date, sunday: dt.date) -> list[dict]:
@@ -285,34 +300,39 @@ def fetch_last_weekend_comparison(database_url: str, saturday: dt.date, sunday: 
     (rule engine went live partway through the season; a day may not be
     logged yet) — the caller must render that gracefully, not assume both exist.
     """
-    results = []
     with connect_with_retry(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
-            for day in (saturday, sunday):
-                cur.execute(
-                    """
-                    SELECT v.name_v FROM weather_prediction wp
-                    JOIN visited v ON v.id_v = wp.predikce_navstevnost_id
-                    WHERE wp.den = %s ORDER BY wp.predikce_den DESC LIMIT 1
-                    """,
-                    (day,),
-                )
-                pred = cur.fetchone()
-                cur.execute(
-                    """
-                    SELECT v.name_v FROM user_input ui
-                    JOIN visited v ON v.id_v = ui.visited_id
-                    WHERE ui.den = %s
-                    """,
-                    (day,),
-                )
-                actual = cur.fetchone()
-                results.append({
-                    "day": day,
-                    "predicted": REVERSE_VISITED_NAMES.get(pred[0]) if pred else None,
-                    "actual": REVERSE_VISITED_NAMES.get(actual[0]) if actual else None,
-                })
-    return results
+            cur.execute(
+                """
+                SELECT
+                    d.den,
+                    (
+                        SELECT v.name_v FROM weather_prediction wp
+                        JOIN visited v ON v.id_v = wp.predikce_navstevnost_id
+                        WHERE wp.den = d.den
+                        ORDER BY wp.predikce_den DESC
+                        LIMIT 1
+                    ) AS pred_name,
+                    (
+                        SELECT v.name_v FROM user_input ui
+                        JOIN visited v ON v.id_v = ui.visited_id
+                        WHERE ui.den = d.den
+                        LIMIT 1
+                    ) AS actual_name
+                FROM (VALUES (%(sat)s::date), (%(sun)s::date)) AS d(den)
+                ORDER BY d.den
+                """,
+                {"sat": saturday, "sun": sunday},
+            )
+            rows = cur.fetchall()
+            return [
+                {
+                    "day": row[0],
+                    "predicted": REVERSE_VISITED_NAMES.get(row[1]) if row[1] else None,
+                    "actual": REVERSE_VISITED_NAMES.get(row[2]) if row[2] else None,
+                }
+                for row in rows
+            ]
 
 
 def comparison_line(c: dict) -> str:
