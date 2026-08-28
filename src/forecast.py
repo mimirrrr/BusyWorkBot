@@ -110,6 +110,24 @@ def is_official_run(schedule_cron: str, today: dt.date) -> bool:
     return today.weekday() == 4
 
 
+def intended_run_date(schedule_cron: str, today: dt.date) -> dt.date:
+    """The calendar date this run was actually scheduled for (Thu or Fri),
+    shifting `today` backward when a delayed GitHub Actions run rolls past
+    midnight into the next day. Used for the message label and for
+    predikce_den, so a late-night delayed run still reads/stores as the day
+    it was meant to represent instead of colliding with the same week's other
+    run once it fires on schedule (see is_official_run's docstring for why
+    the schedule string is trusted over today.weekday()). Only ever shifts
+    backward (a run can't fire before its own schedule); falls back to
+    `today` when there's no schedule to go on (workflow_dispatch, local run,
+    --dry-run).
+    """
+    expected = scheduled_weekday(schedule_cron)
+    if expected is None:
+        return today
+    return today - dt.timedelta(days=(today.weekday() - expected) % 7)
+
+
 def next_weekend(today: dt.date) -> tuple[dt.date, dt.date]:
     """Upcoming Saturday and Sunday (if today is Saturday, that's this weekend)."""
     saturday = today + dt.timedelta(days=(5 - today.weekday()) % 7)
@@ -367,6 +385,7 @@ def main() -> None:
         return
 
     schedule_cron = os.environ.get("SCHEDULE_CRON", "")
+    predikce_den = intended_run_date(schedule_cron, today)
     expected_weekday = scheduled_weekday(schedule_cron)
     if expected_weekday is not None and expected_weekday != today.weekday():
         print(
@@ -411,7 +430,7 @@ def main() -> None:
         "type": 17,  # Container — accent bar + grouped content, mirrors the old embed look
         "accent_color": 0x3498DB,  # flat blue for v1; embed_color() parked for phase 3 verdict rules
         "components": [
-            text(f"📋 **Víkendová předpověď — Bělá**\notevřeno {work_start}:00–{work_end}:00"),
+            text(f"📋 **Víkendová předpověď — {czech_day(predikce_den)}**\notevřeno {work_start}:00–{work_end}:00"),
             text(f"{fields[0]['name']}\n{fields[0]['value']}"),
             {"type": 14, "divider": True, "spacing": 2},
             text(f"{fields[1]['name']}\n{fields[1]['value']}"),
@@ -428,7 +447,7 @@ def main() -> None:
         print(json.dumps(components, indent=2, ensure_ascii=False))
         return
     discord_dm(token, user_id, components)
-    store_predictions(database_url, today, fields)
+    store_predictions(database_url, predikce_den, fields)
     print("Forecast DM sent.")
 
 
